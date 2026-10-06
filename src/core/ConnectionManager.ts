@@ -26,20 +26,14 @@ export interface ConnectionInfo {
  */
 export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
-  private permissionPrompter?: InlinePermissionPrompter;
-  private turnRouter?: TurnRouter;
-
-  setTurnRouter(router: TurnRouter | undefined): void {
-    this.turnRouter = router;
-  }
-
-  setPermissionPrompter(prompter: InlinePermissionPrompter | undefined): void {
-    this.permissionPrompter = prompter;
-  }
 
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
-    private readonly changeTracker?: ChangeTracker,
+    private readonly chat: {
+      changeTracker?: ChangeTracker;
+      turnRouter?: TurnRouter;
+      permissionPrompter?: InlinePermissionPrompter;
+    } = {},
   ) {}
 
   /**
@@ -63,9 +57,9 @@ export class ConnectionManager {
     const tappedStream = this.tapStream(stream);
 
     // Create handlers
-    const fsHandler = new FileSystemHandler(this.changeTracker, () => this.turnRouter);
+    const fsHandler = new FileSystemHandler(this.chat.changeTracker, this.chat.turnRouter);
     const terminalHandler = new TerminalHandler();
-    const permissionHandler = new PermissionHandler(() => this.permissionPrompter);
+    const permissionHandler = new PermissionHandler(this.chat.permissionPrompter);
 
     // Create client implementation
     const client = new AcpClientImpl(

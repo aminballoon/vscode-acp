@@ -18,7 +18,7 @@ export class FileSystemHandler {
 
   constructor(
     private readonly tracker?: ChangeTracker,
-    private readonly getRouter?: () => TurnRouter | undefined,
+    private readonly router?: TurnRouter,
   ) {}
 
   /**
@@ -36,7 +36,7 @@ export class FileSystemHandler {
       );
 
       // A native chat edit may not have reached the editor buffer yet
-      const recent = this.getRouter?.()?.recentlyWritten(params.sessionId, uri.fsPath);
+      const recent = this.router?.recentlyWritten(params.sessionId, uri.fsPath);
 
       let content: string;
       if (recent !== undefined) {
@@ -75,7 +75,7 @@ export class FileSystemHandler {
 
     try {
       // Native chat edit (per-hunk Keep/Undo) when a chat turn is streaming
-      if (await this.getRouter?.()?.nativeWrite(params)) {
+      if (await this.router?.nativeWrite(params)) {
         return {};
       }
 

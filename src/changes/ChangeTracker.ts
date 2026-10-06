@@ -128,8 +128,8 @@ export class ChangeTracker {
     return this.serial(path, async () => {
       const existing = this.entries.get(path);
       if (existing) {
-        const current = await this.io.read(path);
-        if (current === newText) { existing.agentText = newText; await this.persist(); }
+        if (existing.agentText === newText) { return; }
+        if (await this.io.read(path) === newText) { existing.agentText = newText; await this.persist(); }
         return;
       }
       const current = await this.io.read(path);
@@ -158,9 +158,8 @@ export class ChangeTracker {
     return this.serial(path, async () => {
       const entry = this.entries.get(path);
       if (!entry) { return { undone: false, userEdited: false }; }
-      const current = await this.readDisk(path);
       // An editor buffer that still shows the baseline is just stale, not a user edit
-      const buffer = await this.io.read(path);
+      const [current, buffer] = await Promise.all([this.readDisk(path), this.io.read(path)]);
       const userEdited = (current !== null && current !== entry.agentText)
         || (buffer !== null && buffer !== current && buffer !== entry.baseline);
       if (userEdited && !force) { return { undone: false, userEdited }; }
@@ -176,7 +175,9 @@ export class ChangeTracker {
   }
 
   async keepAll(): Promise<void> {
-    await Promise.all([...this.entries.keys()].map(p => this.keep(p)));
+    if (!this.entries.size) { return; }
+    this.entries.clear();
+    await this.persist();
   }
 
   /** Returns paths that were skipped because the user edited them. */

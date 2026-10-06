@@ -3,7 +3,7 @@ import { marked } from 'marked';
 import { SessionManager } from '../core/SessionManager';
 import { SessionUpdateHandler, SessionUpdateListener } from '../handlers/SessionUpdateHandler';
 import type { SessionNotification, RequestPermissionRequest } from '@agentclientprotocol/sdk';
-import { diffLines } from 'diff';
+import { diffRows, DiffRow } from '../changes/diffUtil';
 import { logError } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 
@@ -210,27 +210,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Handle cancel request from webview.
-   */
-  /**
    * Show a permission request inside the chat view.
    * Returns undefined when the chat view is not available (caller falls back to QuickPick).
    */
   requestPermission(params: RequestPermissionRequest): Promise<string | undefined> {
     if (!this.view) { return Promise.resolve(undefined); }
     const id = `perm-${++this.permissionCounter}`;
-    const diffs: Array<{ path: string; lines: Array<{ t: string; s: string }> }> = [];
-    for (const c of (params.toolCall?.content ?? []) as any[]) {
-      if (c?.type !== 'diff' || typeof c.newText !== 'string') { continue; }
-      const lines: Array<{ t: string; s: string }> = [];
-      for (const part of diffLines(c.oldText ?? '', c.newText)) {
-        const t = part.added ? '+' : part.removed ? '-' : ' ';
-        const rows = part.value.replace(/\n$/, '').split('\n');
-        // Collapse long unchanged runs
-        const shown = t === ' ' && rows.length > 6 ? [...rows.slice(0, 2), '…', ...rows.slice(-2)] : rows;
-        for (const s of shown) { lines.push({ t, s }); }
+    const diffs: Array<{ path: string; lines: DiffRow[] }> = [];
+    for (const c of params.toolCall?.content ?? []) {
+      if (c.type === 'diff') {
+        diffs.push({ path: c.path, lines: diffRows(c.oldText ?? '', c.newText, { context: true, max: 200 }) });
       }
-      diffs.push({ path: c.path, lines: lines.slice(0, 200) });
     }
     this.view.show?.(true);
     return new Promise(resolve => {
@@ -254,6 +244,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     for (const resolve of [...this.pendingPermissions.values()]) { resolve('cancelled'); }
   }
 
+  /**
+   * Handle cancel request from webview.
+   */
   private async handleCancelTurn(): Promise<void> {
     this.cancelPendingPermissions();
     const activeId = this.sessionManager.getActiveSessionId();

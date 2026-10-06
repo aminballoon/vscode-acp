@@ -2,93 +2,61 @@ import * as vscode from 'vscode';
 import { log } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 
-import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
+import type { PermissionOption, RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 
 /**
- * Handles ACP permission requests from agents.
- * Shows VS Code QuickPick for user to select from agent-provided options.
+ * Shows a permission request in a chat UI. Resolves to the chosen optionId,
+ * 'cancelled', or undefined when that UI is unavailable.
  */
-/** Renders a permission request in the chat webview. Resolves to an optionId, 'cancelled', or undefined if no UI is available. */
-export type InlinePermissionPrompter = (params: RequestPermissionRequest) => Promise<string | undefined> | undefined;
+export type InlinePermissionPrompter = (params: RequestPermissionRequest) => Promise<string | undefined>;
 
+/** The agent's preferred allow / reject option (the "once" variant when offered). */
+export function pickOption(options: PermissionOption[], kind: 'allow' | 'reject'): PermissionOption | undefined {
+  return options.find(o => o.kind === `${kind}_once`) ?? options.find(o => o.kind.startsWith(kind));
+}
+
+/**
+ * Handles ACP permission requests from agents: auto-approve when configured,
+ * otherwise the in-chat prompt, falling back to a QuickPick.
+ */
 export class PermissionHandler {
-  constructor(private readonly getInlinePrompter?: () => InlinePermissionPrompter | undefined) {}
+  constructor(private readonly inlinePrompter?: InlinePermissionPrompter) {}
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
-    const config = vscode.workspace.getConfiguration('acp');
-    const autoApprove = config.get<string>('autoApprovePermissions', 'none');
-
+    const autoApprove = vscode.workspace.getConfiguration('acp').get<string>('autoApprovePermissions', 'none');
     const title = params.toolCall?.title || 'Permission Request';
     log(`requestPermission: ${title} (autoApprove=${autoApprove})`);
 
-    // Auto-approve: pick first allow-type option
-    if (autoApprove === 'allowAll') {
-      const allowOption = params.options.find(o =>
-        o.kind === 'allow_once' || o.kind === 'allow_always'
-      );
-      if (allowOption) {
-        sendEvent('permission/requested', { permissionType: title, autoApproved: 'true' });
-        return {
-          outcome: {
-            outcome: 'selected',
-            optionId: allowOption.optionId,
-          },
-        };
-      }
+    const allowOption = autoApprove === 'allowAll' ? pickOption(params.options, 'allow') : undefined;
+    if (allowOption) {
+      sendEvent('permission/requested', { permissionType: title, autoApproved: 'true' });
+      return { outcome: { outcome: 'selected', optionId: allowOption.optionId } };
     }
-
-    // Prefer the in-chat prompt; fall back to QuickPick when the chat view is unavailable
-    const inline = this.getInlinePrompter?.();
-    if (inline) {
-      sendEvent('permission/requested', { permissionType: title, autoApproved: 'false' });
-      const answer = await inline(params);
-      if (answer !== undefined) {
-        if (answer === 'cancelled') {
-          sendEvent('permission/responded', { permissionType: title, outcome: 'cancelled' });
-          return { outcome: { outcome: 'cancelled' } };
-        }
-        sendEvent('permission/responded', { permissionType: title, action: answer, outcome: 'selected' });
-        return { outcome: { outcome: 'selected', optionId: answer } };
-      }
-    }
-
-    // Build QuickPick items from agent-provided options
-    const items: (vscode.QuickPickItem & { optionId: string })[] = params.options.map(option => {
-      const icon = option.kind.startsWith('allow') ? '$(check)' : '$(x)';
-      return {
-        label: `${icon} ${option.name}`,
-        description: option.kind,
-        optionId: option.optionId,
-      };
-    });
 
     sendEvent('permission/requested', { permissionType: title, autoApproved: 'false' });
+    const answer = (await this.inlinePrompter?.(params)) ?? await this.quickPick(params, title);
 
+    if (answer === 'cancelled') {
+      log('Permission cancelled by user');
+      sendEvent('permission/responded', { permissionType: title, outcome: 'cancelled' });
+      return { outcome: { outcome: 'cancelled' } };
+    }
+    log(`Permission selected: ${answer}`);
+    sendEvent('permission/responded', { permissionType: title, action: answer, outcome: 'selected' });
+    return { outcome: { outcome: 'selected', optionId: answer } };
+  }
+
+  private async quickPick(params: RequestPermissionRequest, title: string): Promise<string> {
+    const items = params.options.map(option => ({
+      label: `${option.kind.startsWith('allow') ? '$(check)' : '$(x)'} ${option.name}`,
+      description: option.kind,
+      optionId: option.optionId,
+    }));
     const selection = await vscode.window.showQuickPick(items, {
       placeHolder: title,
       title: 'ACP Agent Permission Request',
       ignoreFocusOut: true,
     });
-
-    if (!selection) {
-      log('Permission cancelled by user');
-      sendEvent('permission/responded', { permissionType: title, outcome: 'cancelled' });
-      return {
-        outcome: { outcome: 'cancelled' },
-      };
-    }
-
-    log(`Permission selected: ${selection.optionId}`);
-    sendEvent('permission/responded', {
-      permissionType: title,
-      action: selection.optionId,
-      outcome: 'selected',
-    });
-    return {
-      outcome: {
-        outcome: 'selected',
-        optionId: selection.optionId,
-      },
-    };
+    return selection?.optionId ?? 'cancelled';
   }
 }

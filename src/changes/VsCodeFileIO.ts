@@ -1,19 +1,19 @@
 import * as vscode from 'vscode';
 import type { FileIO } from './ChangeTracker';
 
+function findOpenDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
+  return vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
+}
+
 /** FileIO backed by VS Code; prefers open editor buffers (matches readTextFile). */
 export class VsCodeFileIO implements FileIO {
   async read(path: string): Promise<string | null> {
-    const uri = vscode.Uri.file(path);
-    const open = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
-    if (open) { return open.getText(); }
-    return this.readDisk(path);
+    return findOpenDocument(vscode.Uri.file(path))?.getText() ?? this.readDisk(path);
   }
 
   async readDisk(path: string): Promise<string | null> {
-    const uri = vscode.Uri.file(path);
     try {
-      return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
+      return Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.file(path))).toString('utf-8');
     } catch {
       return null;
     }
@@ -21,7 +21,7 @@ export class VsCodeFileIO implements FileIO {
 
   async write(path: string, content: string): Promise<void> {
     const uri = vscode.Uri.file(path);
-    const open = vscode.workspace.textDocuments.find(d => d.uri.fsPath === uri.fsPath);
+    const open = findOpenDocument(uri);
     // A clean buffer may be stale (agent wrote to disk); editing it can be a no-op,
     // so write to disk and let VS Code reload. Dirty buffers are overwritten via save.
     if (open?.isDirty) {

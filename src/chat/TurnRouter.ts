@@ -3,9 +3,11 @@ import { diffLines } from 'diff';
 import type { RequestPermissionRequest, WriteTextFileRequest } from '@agentclientprotocol/sdk';
 
 import { createFile, hasNativeEdits, pushTextEdits } from './proposed';
-import { log } from '../utils/Logger';
-import type { ChangeTracker } from '../changes/ChangeTracker';
 import { PERMISSION_TOOL, PermissionTool, PermissionInput } from './PermissionTool';
+import type { ChangeTracker } from '../changes/ChangeTracker';
+import { diffRows } from '../changes/diffUtil';
+import { pickOption } from '../handlers/PermissionHandler';
+import { log } from '../utils/Logger';
 
 export interface ActiveTurn {
   stream: vscode.ChatResponseStream;
@@ -27,34 +29,29 @@ export interface ActiveTurn {
  */
 export class TurnRouter {
   private turns = new Map<string, ActiveTurn>();
-
-  constructor(
-    private readonly tracker?: ChangeTracker,
-    private readonly permissionTool?: PermissionTool,
-  ) {}
-
-  /**
-   * Native chat edits (textEdit/externalEdit) are rejected by some session
-   * types (e.g. agent host sessions in VS Code 1.140), so they are opt-in.
-   */
-  get nativeEnabled(): boolean {
-    return vscode.workspace.getConfiguration('acp').get<boolean>('chat.nativeEdits', true);
-  }
   private permCounter = 0;
   /** Sessions whose agent writes files through the client (fs/write_text_file). */
   private clientFsSessions = new Set<string>();
 
-  usesClientFs(sessionId: string): boolean {
-    return this.clientFsSessions.has(sessionId);
-  }
+  constructor(
+    private readonly tracker: ChangeTracker,
+    private readonly permissionTool: PermissionTool,
+  ) {}
 
+  /**
+   * Start routing a session to a chat turn. Native edits are used when enabled
+   * (`acp.chat.nativeEdits`) and the chat session supports them: agent host
+   * sessions (e.g. Copilot CLI in VS Code 1.140) reject extension edits.
+   */
   begin(
     sessionId: string,
     stream: vscode.ChatResponseStream,
     token: vscode.CancellationToken,
     toolToken?: vscode.ChatParticipantToolToken,
-    native = false,
+    sessionResource?: vscode.Uri,
   ): ActiveTurn {
+    const native = vscode.workspace.getConfiguration('acp').get<boolean>('chat.nativeEdits', true)
+      && !sessionResource?.scheme.startsWith('agent-host');
     const turn: ActiveTurn = {
       stream, token, toolToken, native,
       externalPaths: new Set(),
@@ -66,14 +63,22 @@ export class TurnRouter {
   }
 
   end(sessionId: string): void {
-    const turn = this.turns.get(sessionId);
-    if (!turn) { return; }
-    for (const resolve of [...turn.pendingPermissions.values()]) { resolve('cancelled'); }
+    this.cancelPermissions(sessionId);
     this.turns.delete(sessionId);
   }
 
   get(sessionId: string): ActiveTurn | undefined {
     return this.turns.get(sessionId);
+  }
+
+  /** Resolve every pending permission prompt of a session as cancelled. */
+  cancelPermissions(sessionId: string): void {
+    const turn = this.turns.get(sessionId);
+    for (const resolve of [...(turn?.pendingPermissions.values() ?? [])]) { resolve('cancelled'); }
+  }
+
+  usesClientFs(sessionId: string): boolean {
+    return this.clientFsSessions.has(sessionId);
   }
 
   /** Content the agent wrote this turn that the editor buffer may not reflect yet. */
@@ -83,7 +88,7 @@ export class TurnRouter {
 
   /**
    * Route an agent file write into the chat's native edit UI (per-hunk Keep/Undo).
-   * Returns false when there is no active turn or the API is unavailable.
+   * Returns false when there is no active native turn or the API is unavailable.
    */
   async nativeWrite(params: WriteTextFileRequest): Promise<boolean> {
     this.clientFsSessions.add(params.sessionId);
@@ -92,6 +97,7 @@ export class TurnRouter {
     const uri = vscode.Uri.file(params.path);
     if (turn.externalPaths.has(uri.fsPath)) { return false; }
 
+    // Edits are computed against the editor buffer, which textEdit applies to
     let oldText = '';
     let exists = true;
     try {
@@ -107,25 +113,22 @@ export class TurnRouter {
     return true;
   }
 
-  /** Ask for permission using buttons in the response. Returns undefined when no turn is active. */
-  requestPermission(params: RequestPermissionRequest): Promise<string> | undefined {
+  /** Ask for permission inside the active turn. Resolves to undefined when no turn is active. */
+  async requestPermission(params: RequestPermissionRequest): Promise<string | undefined> {
     const turn = this.turns.get(params.sessionId);
     if (!turn) { return undefined; }
     // Snapshot files the agent is about to edit, before the user approves
     for (const l of params.toolCall?.locations ?? []) {
-      void this.tracker?.captureBaseline(vscode.Uri.file(l.path).fsPath);
+      void this.tracker.captureBaseline(vscode.Uri.file(l.path).fsPath);
     }
-    if (turn.toolToken && this.permissionTool) {
+    if (turn.toolToken) {
       return this.confirmWithTool(turn, params);
     }
+
     const id = `perm-${++this.permCounter}`;
     turn.stream.markdown(`\n\n**${params.toolCall?.title || 'Permission request'}**\n\n`);
     for (const o of params.options) {
-      turn.stream.button({
-        title: o.name,
-        command: 'acp.permission.answer',
-        arguments: [id, o.optionId],
-      });
+      turn.stream.button({ title: o.name, command: 'acp.permission.answer', arguments: [id, o.optionId] });
     }
     return new Promise<string>(resolve => {
       turn.pendingPermissions.set(id, optionId => {
@@ -135,63 +138,59 @@ export class TurnRouter {
     });
   }
 
-  /**
-   * Native confirmation (Allow / Skip). VS Code's own "allow for session /
-   * always" choices auto-approve later calls, so approval maps to allow_once.
-   */
-  private async confirmWithTool(turn: ActiveTurn, params: RequestPermissionRequest): Promise<string> {
-    const allow = params.options.find(o => o.kind === 'allow_once') ?? params.options.find(o => o.kind.startsWith('allow'));
-    const reject = params.options.find(o => o.kind === 'reject_once') ?? params.options.find(o => o.kind.startsWith('reject'));
-    const title = params.toolCall?.title || 'Allow agent action?';
-    const tc: any = params.toolCall ?? {};
-    const files = (tc.locations ?? []).map((l: any) => vscode.workspace.asRelativePath(l.path));
-    const input: PermissionInput = { action: title };
-    if (files.length) { input.files = files; }
-    if (typeof tc.rawInput?.command === 'string') { input.command = tc.rawInput.command; }
-    const id = this.permissionTool!.register(input, describeToolCall(params));
-    try {
-      await vscode.lm.invokeTool(PERMISSION_TOOL, { input: id, toolInvocationToken: turn.toolToken }, turn.token);
-      log(`permission: allowed via native confirmation (${title})`);
-      return allow?.optionId ?? 'cancelled';
-    } catch (e: any) {
-      log(`permission: not allowed (${title}): ${e?.name ?? ''} ${e?.message ?? e}`);
-      if (turn.token.isCancellationRequested) { return 'cancelled'; }
-      return reject?.optionId ?? 'cancelled';
-    } finally {
-      this.permissionTool!.release(id);
-    }
-  }
-
   answerPermission(permId: string, optionId: string): void {
     for (const turn of this.turns.values()) {
       const resolve = turn.pendingPermissions.get(permId);
       if (resolve) { resolve(optionId); return; }
     }
   }
+
+  /**
+   * Native confirmation (Allow / Skip). VS Code's own "allow for session /
+   * always" choices auto-approve later calls, so approval maps to allow_once.
+   */
+  private async confirmWithTool(turn: ActiveTurn, params: RequestPermissionRequest): Promise<string> {
+    const tc = params.toolCall;
+    const title = tc?.title || 'Allow agent action?';
+    const input: PermissionInput = { action: title };
+    const files = (tc?.locations ?? []).map(l => vscode.workspace.asRelativePath(l.path));
+    if (files.length) { input.files = files; }
+    const command = (tc?.rawInput as { command?: unknown } | undefined)?.command;
+    if (typeof command === 'string') { input.command = command; }
+
+    this.permissionTool.register(input, describeToolCall(params));
+    try {
+      await vscode.lm.invokeTool(PERMISSION_TOOL, { input, toolInvocationToken: turn.toolToken }, turn.token);
+      log(`permission: allowed (${title})`);
+      return pickOption(params.options, 'allow')?.optionId ?? 'cancelled';
+    } catch (e: any) {
+      log(`permission: not allowed (${title}): ${e?.message ?? e}`);
+      if (turn.token.isCancellationRequested) { return 'cancelled'; }
+      return pickOption(params.options, 'reject')?.optionId ?? 'cancelled';
+    } finally {
+      this.permissionTool.release(input);
+    }
+  }
 }
 
-/** Markdown body for a permission confirmation: target files and diff preview. */
+/** Markdown body for a permission confirmation: diff preview, files or command. */
 function describeToolCall(params: RequestPermissionRequest): string {
   const lines: string[] = [];
-  const tc: any = params.toolCall ?? {};
-  for (const c of tc.content ?? []) {
-    if (c?.type === 'diff' && typeof c.newText === 'string') {
-      const body: string[] = [];
-      for (const part of diffLines(c.oldText ?? '', c.newText)) {
-        if (!part.added && !part.removed) { continue; }
-        const sign = part.added ? '+' : '-';
-        for (const l of part.value.replace(/\n$/, '').split('\n')) { body.push(sign + l); }
-      }
-      lines.push('```diff\n' + body.slice(0, 60).join('\n') + '\n```');
-    } else if (c?.type === 'content' && c.content?.type === 'text') {
+  const tc = params.toolCall;
+  for (const c of tc?.content ?? []) {
+    if (c.type === 'diff') {
+      const rows = diffRows(c.oldText ?? '', c.newText, { context: false, max: 60 });
+      lines.push('```diff\n' + rows.map(r => r.t + r.s).join('\n') + '\n```');
+    } else if (c.type === 'content' && c.content.type === 'text') {
       lines.push(c.content.text);
     }
   }
   if (!lines.length) {
-    for (const l of tc.locations ?? []) { lines.push(`\`${l.path}\``); }
+    for (const l of tc?.locations ?? []) { lines.push(`\`${l.path}\``); }
   }
-  if (!lines.length && tc.rawInput?.command) {
-    lines.push('```sh\n' + String(tc.rawInput.command) + '\n```');
+  const command = (tc?.rawInput as { command?: unknown } | undefined)?.command;
+  if (!lines.length && command) {
+    lines.push('```sh\n' + String(command) + '\n```');
   }
   return lines.join('\n\n') || 'The agent wants to run this action.';
 }

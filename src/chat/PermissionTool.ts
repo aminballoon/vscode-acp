@@ -19,11 +19,10 @@ export interface PermissionInput {
 export class PermissionTool implements vscode.LanguageModelTool<PermissionInput> {
   private details = new Map<string, string[]>();
 
-  /** Register a pending ask; returns the input to invoke the tool with. */
-  register(input: PermissionInput, details: string): PermissionInput {
+  /** Register a pending ask; invoke the tool with the same `input`, then `release` it. */
+  register(input: PermissionInput, details: string): void {
     const key = JSON.stringify(input);
     this.details.set(key, [...(this.details.get(key) ?? []), details]);
-    return input;
   }
 
   release(input: PermissionInput): void {

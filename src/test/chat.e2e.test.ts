@@ -1,23 +1,9 @@
 import * as assert from 'assert';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import * as vscode from 'vscode';
 
 import type { AcpExtensionApi } from '../extension';
-
-const EXT_ID = 'aminballoon.acp-agents';
-const ORIGINAL = 'import time\n\n\ndef main():\n    time.sleep(2)\n    print("hi")\n';
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-async function waitFor<T>(fn: () => T | undefined | Promise<T | undefined>, timeoutMs: number, label: string): Promise<T> {
-  const end = Date.now() + timeoutMs;
-  while (Date.now() < end) {
-    const v = await fn();
-    if (v) { return v; }
-    await sleep(200);
-  }
-  throw new Error(`Timed out waiting for ${label}`);
-}
+import { ORIGINAL, connectFakeAgent, fixtureTarget, resetFixture, waitFor } from './helpers';
 
 type Part = { kind: string; value: any };
 
@@ -59,29 +45,18 @@ suite('Chat participant e2e (fake agent)', function () {
   let target: string;
 
   suiteSetup(async () => {
-    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    assert.ok(ws, 'test must run with a workspace folder');
-    const repo = path.resolve(ws, '..', '..');
-    target = vscode.Uri.file(path.join(ws, 'hello.py')).fsPath;
-
-    api = await vscode.extensions.getExtension<AcpExtensionApi>(EXT_ID)!.activate();
-
-    const acpConfig = vscode.workspace.getConfiguration('acp');
-    await acpConfig.update('agents', {
-      'Fake Agent': { command: process.env.ACP_E2E_NODE || 'node', args: [path.join(repo, 'test-fixtures', 'fake-agent.mjs')] },
-    }, vscode.ConfigurationTarget.Global);
-    await acpConfig.update('autoApprovePermissions', 'none', vscode.ConfigurationTarget.Global);
-    await vscode.commands.executeCommand('acp.connectAgent', 'Fake Agent');
+    target = fixtureTarget();
+    api = await connectFakeAgent({ autoApprovePermissions: 'none' });
   });
 
   setup(async () => {
     await api.changeTracker.keepAll();
-    fs.writeFileSync(target, ORIGINAL);
+    resetFixture();
     // Keep the file open so its buffer can lag behind the agent's disk write
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(target));
   });
 
-  suiteTeardown(() => { fs.writeFileSync(target, ORIGINAL); });
+  suiteTeardown(resetFixture);
 
   test('approved agent-side edit: diff card, Keep/Undo, undo restores', async () => {
     const parts = await runTurn(api, target, 'allow-once');

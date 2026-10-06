@@ -1,16 +1,15 @@
 import * as vscode from 'vscode';
 import * as nodePath from 'node:path';
-import { diffLines } from 'diff';
-
 import type { ChangeTracker } from './ChangeTracker';
+import { countLineChanges } from './diffUtil';
 
 export const BASELINE_SCHEME = 'acp-baseline';
 
-/** Serves baseline content for the left side of the diff editor. */
+/**
+ * Serves baseline content for the left side of the diff editor. The entry
+ * version is part of the URI, so a new baseline gets a new document.
+ */
 export class BaselineContentProvider implements vscode.TextDocumentContentProvider {
-  private readonly emitter = new vscode.EventEmitter<vscode.Uri>();
-  readonly onDidChange = this.emitter.event;
-
   constructor(private readonly tracker: ChangeTracker) {}
 
   static uriFor(path: string, version: number): vscode.Uri {
@@ -21,12 +20,6 @@ export class BaselineContentProvider implements vscode.TextDocumentContentProvid
     const entry = this.tracker.get(vscode.Uri.file(uri.path).fsPath);
     return entry?.baseline ?? '';
   }
-
-  fire(path: string, version: number): void {
-    this.emitter.fire(BaselineContentProvider.uriFor(path, version));
-  }
-
-  dispose(): void { this.emitter.dispose(); }
 }
 
 class ChangeItem extends vscode.TreeItem {
@@ -51,18 +44,13 @@ export class ChangesTreeProvider implements vscode.TreeDataProvider<ChangeItem> 
 
   getTreeItem(item: ChangeItem): vscode.TreeItem { return item; }
 
-  async getChildren(): Promise<ChangeItem[]> {
-    const items: ChangeItem[] = [];
-    for (const [path, entry] of this.tracker.list()) {
+  getChildren(): Promise<ChangeItem[]> {
+    // Counts reflect the current file, including the user's edits after the agent
+    return Promise.all(this.tracker.list().map(async ([path, entry]) => {
       const current = (await this.io.read(path)) ?? '';
-      let added = 0, removed = 0;
-      for (const part of diffLines(entry.baseline ?? '', current)) {
-        if (part.added) { added += part.count ?? 0; }
-        else if (part.removed) { removed += part.count ?? 0; }
-      }
-      items.push(new ChangeItem(path, added, removed, entry.baseline === null));
-    }
-    return items;
+      const { added, removed } = countLineChanges(entry.baseline ?? '', current);
+      return new ChangeItem(path, added, removed, entry.baseline === null);
+    }));
   }
 
   dispose(): void { this.sub.dispose(); this.emitter.dispose(); }
@@ -76,17 +64,10 @@ export function registerChangesView(
   const provider = new BaselineContentProvider(tracker);
   const tree = new ChangesTreeProvider(tracker, io);
   const treeView = vscode.window.createTreeView('acp-changes', { treeDataProvider: tree });
-  const lastVersions = new Map<string, number>();
 
   const syncBadge = () => {
     treeView.badge = tracker.size ? { value: tracker.size, tooltip: `${tracker.size} pending file(s)` } : undefined;
     void vscode.commands.executeCommand('setContext', 'acp.hasPendingChanges', tracker.size > 0);
-    for (const [path, entry] of tracker.list()) {
-      if (lastVersions.get(path) !== entry.version) {
-        lastVersions.set(path, entry.version);
-        provider.fire(path, entry.version);
-      }
-    }
   };
   syncBadge();
 
@@ -97,7 +78,7 @@ export function registerChangesView(
 
   const reg = vscode.commands.registerCommand;
   context.subscriptions.push(
-    treeView, tree, provider,
+    treeView, tree,
     vscode.workspace.registerTextDocumentContentProvider(BASELINE_SCHEME, provider),
     tracker.onDidChange(syncBadge),
     reg('acp.changes.openDiff', async (arg?: any) => {
@@ -118,14 +99,14 @@ export function registerChangesView(
     reg('acp.changes.undo', async (arg?: any) => {
       const path = pathOf(arg);
       if (!path) { return; }
-      let r = await tracker.undo(path);
+      const r = await tracker.undo(path);
       if (r.userEdited && !r.undone) {
         const choice = await vscode.window.showWarningMessage(
           `${nodePath.basename(path)} was edited after the agent changed it. Undo will discard your edits too.`,
           { modal: true }, 'Undo Anyway',
         );
         if (choice !== 'Undo Anyway') { return; }
-        r = await tracker.undo(path, true);
+        await tracker.undo(path, true);
       }
     }),
     reg('acp.changes.keepAll', async () => { await tracker.keepAll(); }),
