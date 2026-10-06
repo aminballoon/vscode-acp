@@ -19,3 +19,4 @@ test-fixtures/**
 .vscode-test.mjs
 docs/**
 scripts/**
+*.bak

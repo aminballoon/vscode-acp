@@ -50,35 +50,47 @@ Each agent runs as its own official CLI, so you use your existing subscription /
 
 ## Installation
 
-The proposed APIs mean this extension cannot be published to the Marketplace. Build it once and install the `.vsix`:
+The proposed APIs mean this extension cannot be published to the Marketplace. The installer handles everything in one step on macOS, Linux or Windows. It needs Node.js 18+ and VS Code's `code` command.
 
 ```bash
 git clone <this repo> && cd vscode-acp
+npm run setup
+```
+
+`npm run setup` does four things:
+1. Builds `acp-agents-<version>.vsix`.
+2. Uninstalls the original **ACP Client** (`formulahendry.acp-client`) if present, because both register the same commands.
+3. Installs the `.vsix` with `code --install-extension`.
+4. Adds `"enable-proposed-api": ["aminballoon.acp-agents"]` to `~/.vscode/argv.json`, keeping comments and other settings. A backup is saved as `argv.json.bak`.
+
+Then **quit VS Code completely** (`Cmd+Q` / File → Exit) and open it again. `argv.json` is only read at startup.
+
+| Option | Use |
+|--------|-----|
+| `npm run setup -- --vsix path/to/acp-agents.vsix` | Install a prebuilt `.vsix`, for example from GitHub Releases, without building |
+| `npm run setup -- --insiders` | Target VS Code Insiders (`code-insiders`, `~/.vscode-insiders/argv.json`) |
+| `npm run setup -- --uninstall` | Remove the extension and its `argv.json` entry |
+
+To update later, run `git pull && npm run setup`, then **Developer: Reload Window**.
+
+Recommended: set `"update.mode": "manual"` in VS Code settings, so an automatic update cannot break the proposed APIs. The extension is tested against VS Code 1.140.
+
+<details>
+<summary>Manual installation (without the script)</summary>
+
+```bash
 npm install
-npx vsce package --no-dependencies          # -> acp-agents-<version>.vsix
+npx vsce package --no-dependencies
 code --install-extension acp-agents-*.vsix
 ```
 
-Then allow the proposed APIs for this extension:
+Then run **Preferences: Configure Runtime Arguments**, add the following to `argv.json`, and restart VS Code:
 
-1. Run **Preferences: Configure Runtime Arguments** from the Command Palette. This opens `~/.vscode/argv.json`.
-2. Add:
-   ```jsonc
-   "enable-proposed-api": ["aminballoon.acp-agents"]
-   ```
-3. Quit VS Code completely (`Cmd+Q`) and reopen it.
-
-Recommended:
-- Set `"update.mode": "manual"` so a VS Code update cannot break the proposed APIs unexpectedly.
-- If you have the original **ACP Client** (`formulahendry.acp-client`) installed, uninstall it. Both register the same commands.
-
-To update after pulling changes, rebuild the `.vsix` and reinstall it:
-
-```bash
-npx vsce package --no-dependencies && code --install-extension acp-agents-*.vsix --force
+```jsonc
+"enable-proposed-api": ["aminballoon.acp-agents"]
 ```
 
-Then run **Developer: Reload Window**.
+</details>
 
 ## Usage
 

@@ -524,7 +524,8 @@
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test --label unit",
     "test:e2e": "npm run compile && npm run compile-tests && vscode-test --label e2e",
-    "test:ui": "zsh scripts/ui-screenshots.sh"
+    "test:ui": "zsh scripts/ui-screenshots.sh",
+    "setup": "node scripts/install.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.1",
