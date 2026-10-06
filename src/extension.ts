@@ -10,6 +10,7 @@ import { registerChangesView } from './changes/ChangesView';
 import { TurnRouter } from './chat/TurnRouter';
 import { PermissionTool, PERMISSION_TOOL } from './chat/PermissionTool';
 import { registerChatParticipant } from './chat/AcpChatParticipant';
+import { registerAcpChatSessions } from './chat/AcpChatSessions';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
@@ -24,6 +25,10 @@ export interface AcpExtensionApi {
   changeTracker: ChangeTracker;
   chatHandler: vscode.ChatRequestHandler;
   chatRequestCount(): number;
+  /** Request handler of the "ACP" chat session type (applies picker selections first). */
+  acpSessionHandler: vscode.ChatRequestHandler;
+  /** Config options of the active ACP session. */
+  activeConfigOptions(): unknown[] | null;
 }
 
 export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
@@ -80,6 +85,8 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   );
 
   const chatParticipant = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker);
+  // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input
+  const acpSessionHandler = registerAcpChatSessions(context, sessionManager, turnRouter, chatParticipant.handler);
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
@@ -581,7 +588,13 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
 
   sendEvent('extension/activated', { version: vscode.extensions.getExtension('aminballoon.acp-agents')?.packageJSON?.version ?? 'unknown' });
   log('ACP Client extension activated.');
-  return { changeTracker, chatHandler: chatParticipant.handler, chatRequestCount: chatParticipant.requestCount };
+  return {
+    changeTracker,
+    chatHandler: chatParticipant.handler,
+    chatRequestCount: chatParticipant.requestCount,
+    acpSessionHandler,
+    activeConfigOptions: () => sessionManager.getActiveSession()?.configOptions ?? null,
+  };
 }
 
 export function deactivate(): void {

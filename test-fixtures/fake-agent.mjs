@@ -19,7 +19,21 @@ class FakeAgent {
   async newSession(params) {
     const sessionId = 'fake-' + Date.now();
     this.cwds.set(sessionId, params.cwd || process.cwd());
-    return { sessionId };
+    this.config = { model: 'fake-smart', effort: 'medium' };
+    return { sessionId, configOptions: this.configOptions() };
+  }
+  // Session Config Options, so the chat pickers have a model and effort to show
+  configOptions() {
+    return [
+      { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: this.config.model,
+        options: [{ value: 'fake-fast', name: 'Fake Fast' }, { value: 'fake-smart', name: 'Fake Smart' }] },
+      { id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue: this.config.effort,
+        options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }] },
+    ];
+  }
+  async setSessionConfigOption(params) {
+    this.config[params.configId] = params.value;
+    return { configOptions: this.configOptions() };
   }
   async authenticate() { return {}; }
   async cancel() {}

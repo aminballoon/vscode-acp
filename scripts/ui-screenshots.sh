@@ -12,9 +12,10 @@ mkdir -p $OUT && rm -f $OUT/*(N)
 
 cd $ROOT
 npm run compile >/dev/null && npm run compile-tests >/dev/null
-(ACP_UI_SIGNAL_DIR=$OUT npx vscode-test --label ui > $OUT/ui.log 2>&1; echo $? > $OUT/exit) &
+ACP_UI_SIGNAL_DIR=$OUT npx vscode-test --label ui > $OUT/ui.log 2>&1 &
+pid=$!
 
-while [ ! -f $OUT/exit ]; do
+while kill -0 $pid 2>/dev/null; do
   for r in $OUT/*.req(N); do
     n=${r:t:r}
     id=$($WINID "Extension Development Host" | head -1 | cut -f1)
@@ -23,7 +24,7 @@ while [ ! -f $OUT/exit ]; do
   done
   sleep 0.5
 done
-code=$(cat $OUT/exit); rm -f $OUT/exit
+wait $pid; code=$?
 grep -E "passing|failing" $OUT/ui.log || true
 echo "Screenshots in $OUT"
 exit $code

@@ -6,7 +6,8 @@
   "publisher": "aminballoon",
   "enabledApiProposals": [
     "chatParticipantAdditions",
-    "chatParticipantPrivate"
+    "chatParticipantPrivate",
+    "chatSessionsProvider"
   ],
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -49,6 +50,26 @@
             "command": { "type": "string" }
           },
           "required": ["action"]
+        }
+      }
+    ],
+    "chatSessions": [
+      {
+        "type": "acp",
+        "name": "acp",
+        "displayName": "ACP",
+        "icon": "$(hubot)",
+        "welcomeTitle": "ACP Agents",
+        "welcomeMessage": "Chat with Claude Code, Codex, Antigravity and other ACP agents",
+        "inputPlaceholder": "Ask the selected ACP agent, type `#` for adding context",
+        "order": 3,
+        "canDelegate": true,
+        "supportsAutoModel": true,
+        "description": "Run an ACP coding agent (choose agent, model, effort and permissions below the input)",
+        "capabilities": {
+          "supportsFileAttachments": true,
+          "supportsProblemAttachments": true,
+          "supportsSymbolAttachments": true
         }
       }
     ],

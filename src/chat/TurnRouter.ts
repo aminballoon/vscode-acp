@@ -16,6 +16,8 @@ export interface ActiveTurn {
   toolToken?: vscode.ChatParticipantToolToken;
   /** Whether this turn's chat session accepts native edits (textEdit/externalEdit). */
   native: boolean;
+  /** Approve permission requests without asking (ACP session "Auto-approve"). */
+  autoApprove: boolean;
   /** Paths covered by an open externalEdit(); writes there go straight to disk. */
   externalPaths: Set<string>;
   /** Last content written per path via textEdit, served to readTextFile until the turn ends. */
@@ -32,6 +34,8 @@ export class TurnRouter {
   private permCounter = 0;
   /** Sessions whose agent writes files through the client (fs/write_text_file). */
   private clientFsSessions = new Set<string>();
+  /** Sessions whose next turn approves permission requests without asking. */
+  private autoApproveNext = new Set<string>();
 
   constructor(
     private readonly tracker: ChangeTracker,
@@ -54,6 +58,7 @@ export class TurnRouter {
       && !sessionResource?.scheme.startsWith('agent-host');
     const turn: ActiveTurn = {
       stream, token, toolToken, native,
+      autoApprove: this.autoApproveNext.delete(sessionId),
       externalPaths: new Set(),
       written: new Map(),
       pendingPermissions: new Map(),
@@ -75,6 +80,11 @@ export class TurnRouter {
   cancelPermissions(sessionId: string): void {
     const turn = this.turns.get(sessionId);
     for (const resolve of [...(turn?.pendingPermissions.values() ?? [])]) { resolve('cancelled'); }
+  }
+
+  /** Set the permission policy for the session's next turn (consumed by `begin`). */
+  setAutoApproveNextTurn(sessionId: string, enabled: boolean): void {
+    if (enabled) { this.autoApproveNext.add(sessionId); } else { this.autoApproveNext.delete(sessionId); }
   }
 
   usesClientFs(sessionId: string): boolean {
@@ -120,6 +130,10 @@ export class TurnRouter {
     // Snapshot files the agent is about to edit, before the user approves
     for (const l of params.toolCall?.locations ?? []) {
       void this.tracker.captureBaseline(vscode.Uri.file(l.path).fsPath);
+    }
+    if (turn.autoApprove) {
+      log(`permission: auto-approved (${params.toolCall?.title ?? ''})`);
+      return pickOption(params.options, 'allow')?.optionId ?? 'cancelled';
     }
     if (turn.toolToken) {
       return this.confirmWithTool(turn, params);

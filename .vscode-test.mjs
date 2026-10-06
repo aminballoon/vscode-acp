@@ -26,7 +26,7 @@ export default defineConfig([
 		// Drives the real Chat view; see scripts/ui-test.sh for screenshots.
 		label: 'ui',
 		extensionDevelopmentPath: ['.', './test-fixtures/fake-lm'],
-		files: 'out/test/chat.ui.test.js',
+		files: ['out/test/chat.sessions.ui.test.js', 'out/test/chat.ui.test.js'],
 		useInstallation: { fromPath: '/Applications/Visual Studio Code.app/Contents/MacOS/Code' },
 		workspaceFolder: './test-fixtures/ws',
 		launchArgs: [

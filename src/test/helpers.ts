@@ -38,12 +38,18 @@ export function resetFixture(): void {
 }
 
 /** Activate the extension, configure the fake agent and connect to it. */
-export async function connectFakeAgent(settings: Record<string, unknown> = {}): Promise<AcpExtensionApi> {
+export async function connectFakeAgent(
+  settings: Record<string, unknown> = {},
+  agentName = 'Fake Agent',
+): Promise<AcpExtensionApi> {
   const api = await vscode.extensions.getExtension<AcpExtensionApi>(EXT_ID)!.activate();
   const repo = path.resolve(path.dirname(fixtureTarget()), '..', '..');
   const config = vscode.workspace.getConfiguration('acp');
+  // Add to the fake agents configured so far (an open ACP session may still use them)
+  const existing = config.inspect<Record<string, unknown>>('agents')?.globalValue ?? {};
   await config.update('agents', {
-    'Fake Agent': {
+    ...existing,
+    [agentName]: {
       command: process.env.ACP_E2E_NODE || 'node',
       args: [path.join(repo, 'test-fixtures', 'fake-agent.mjs')],
     },
@@ -51,6 +57,6 @@ export async function connectFakeAgent(settings: Record<string, unknown> = {}): 
   for (const [key, value] of Object.entries(settings)) {
     await config.update(key, value, vscode.ConfigurationTarget.Global);
   }
-  await vscode.commands.executeCommand('acp.connectAgent', 'Fake Agent');
+  await vscode.commands.executeCommand('acp.connectAgent', agentName);
   return api;
 }

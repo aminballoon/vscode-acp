@@ -7,11 +7,10 @@ import { ORIGINAL, connectFakeAgent, fixtureTarget, resetFixture, waitFor } from
 
 type Part = { kind: string; value: any };
 
-/** Run one @acp turn against the fake agent, answering its permission prompt with `optionId`. */
-async function runTurn(api: AcpExtensionApi, target: string, optionId: string): Promise<Part[]> {
-  const parts: Part[] = [];
+/** Stream stub that records every response part. */
+function recordingStream(parts: Part[]): vscode.ChatResponseStream {
   const rec = (kind: string) => (value: any) => { parts.push({ kind, value }); };
-  const stream = {
+  return {
     markdown: rec('markdown'), anchor: rec('anchor'), button: rec('button'), filetree: rec('filetree'),
     progress: rec('progress'), reference: rec('reference'),
     push: (part: any) => {
@@ -21,6 +20,12 @@ async function runTurn(api: AcpExtensionApi, target: string, optionId: string): 
       parts.push({ kind, value: part });
     },
   } as unknown as vscode.ChatResponseStream;
+}
+
+/** Run one @acp turn against the fake agent, answering its permission prompt with `optionId`. */
+async function runTurn(api: AcpExtensionApi, target: string, optionId: string): Promise<Part[]> {
+  const parts: Part[] = [];
+  const stream = recordingStream(parts);
 
   const cts = new vscode.CancellationTokenSource();
   const turn = Promise.resolve(api.chatHandler(
@@ -81,6 +86,32 @@ suite('Chat participant e2e (fake agent)', function () {
     assert.strictEqual(fs.readFileSync(target, 'utf8'), ORIGINAL);
     assert.ok(!parts.some(p => p.kind === 'multiDiff'), 'no diff card');
     assert.strictEqual(api.changeTracker.size, 0);
+  });
+
+  test('ACP session pickers: model, effort and auto-approve are applied', async () => {
+    const parts: Part[] = [];
+    const selected = (id: string, value: string) => ({ id, name: id, items: [], selected: { id: value, name: value } });
+    const ctx = {
+      history: [],
+      chatSessionContext: {
+        inputState: {
+          groups: [
+            selected('agent', 'Fake Agent'), selected('model', 'fake-fast'),
+            selected('effort', 'high'), selected('permissions', 'auto'),
+          ],
+        },
+      },
+    } as unknown as vscode.ChatContext;
+    await api.acpSessionHandler(
+      { prompt: `edit ${target}` } as unknown as vscode.ChatRequest, ctx,
+      recordingStream(parts), new vscode.CancellationTokenSource().token,
+    );
+
+    const config = api.activeConfigOptions() as Array<{ id: string; currentValue: string }>;
+    assert.strictEqual(config.find(o => o.id === 'model')?.currentValue, 'fake-fast');
+    assert.strictEqual(config.find(o => o.id === 'effort')?.currentValue, 'high');
+    assert.ok(fs.readFileSync(target, 'utf8').includes('sleep(10)'), 'edit applied without a prompt');
+    assert.ok(!parts.some(p => p.kind === 'button' && p.value?.command === 'acp.permission.answer'), 'no permission prompt');
   });
 
   test('keep clears the pending entry and leaves the agent result', async () => {
