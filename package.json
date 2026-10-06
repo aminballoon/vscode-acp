@@ -1,9 +1,13 @@
 {
-  "name": "acp-client",
-  "displayName": "ACP Client",
+  "name": "acp-agents",
+  "displayName": "ACP Agents",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
   "version": "0.2.0",
-  "publisher": "formulahendry",
+  "publisher": "aminballoon",
+  "enabledApiProposals": [
+    "chatParticipantAdditions",
+    "chatParticipantPrivate"
+  ],
   "license": "MIT",
   "icon": "resources/icon.png",
   "bugs": {
@@ -16,7 +20,7 @@
     "url": "https://github.com/formulahendry/vscode-acp.git"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.140.0"
   },
   "categories": [
     "AI",
@@ -32,6 +36,31 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "languageModelTools": [
+      {
+        "name": "acp_permission",
+        "displayName": "ACP Agent Action",
+        "modelDescription": "Internal to the ACP Agents extension: shows a confirmation for an action requested by a connected ACP agent. Do not call this tool.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string" },
+            "files": { "type": "array", "items": { "type": "string" } },
+            "command": { "type": "string" }
+          },
+          "required": ["action"]
+        }
+      }
+    ],
+    "chatParticipants": [
+      {
+        "id": "acp.agent",
+        "name": "acp",
+        "fullName": "ACP Agent",
+        "description": "Chat with the connected ACP coding agent",
+        "isSticky": true
+      }
+    ],
     "viewsContainers": {
       "activitybar": [
         {
@@ -49,6 +78,11 @@
           "type": "tree"
         },
         {
+          "id": "acp-changes",
+          "name": "Pending Changes",
+          "type": "tree"
+        },
+        {
           "id": "acp-chat",
           "name": "Chat",
           "type": "webview"
@@ -61,11 +95,40 @@
         "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\nConfigure agents in settings or browse the [Agent Registry](command:acp.browseRegistry)."
       },
       {
+        "view": "acp-changes",
+        "contents": "No pending agent changes."
+      },
+      {
         "view": "acp-chat",
         "contents": "Start chatting with an AI coding agent.\n[Connect to Agent](command:acp.connectAgent)\nSelect an agent from the list above to begin."
       }
     ],
     "commands": [
+      {
+        "command": "acp.changes.openDiff",
+        "title": "ACP: Open Diff",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "acp.changes.keep",
+        "title": "ACP: Keep Change",
+        "icon": "$(check)"
+      },
+      {
+        "command": "acp.changes.undo",
+        "title": "ACP: Undo Change",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "acp.changes.keepAll",
+        "title": "ACP: Keep All Changes",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "acp.changes.undoAll",
+        "title": "ACP: Undo All Changes",
+        "icon": "$(discard)"
+      },
       {
         "command": "acp.connectAgent",
         "title": "ACP: Connect to Agent",
@@ -162,6 +225,26 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "acp.changes.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "acp.changes.keep",
+          "when": "false"
+        },
+        {
+          "command": "acp.changes.undo",
+          "when": "false"
+        },
+        {
+          "command": "acp.changes.keepAll",
+          "when": "acp.hasPendingChanges"
+        },
+        {
+          "command": "acp.changes.undoAll",
+          "when": "acp.hasPendingChanges"
+        },
+        {
           "command": "acp.openSession",
           "when": "false"
         },
@@ -179,6 +262,16 @@
         }
       ],
       "view/title": [
+        {
+          "command": "acp.changes.keepAll",
+          "when": "view == acp-changes",
+          "group": "navigation@1"
+        },
+        {
+          "command": "acp.changes.undoAll",
+          "when": "view == acp-changes",
+          "group": "navigation@2"
+        },
         {
           "command": "acp.addAgent",
           "when": "view == acp-sessions",
@@ -227,6 +320,21 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "acp.changes.openDiff",
+          "when": "view == acp-changes && viewItem == acpChange",
+          "group": "inline@1"
+        },
+        {
+          "command": "acp.changes.keep",
+          "when": "view == acp-changes && viewItem == acpChange",
+          "group": "inline@2"
+        },
+        {
+          "command": "acp.changes.undo",
+          "when": "view == acp-changes && viewItem == acpChange",
+          "group": "inline@3"
+        },
         {
           "command": "acp.connectAgent",
           "when": "view == acp-sessions && viewItem == agent-disconnected",
@@ -331,10 +439,18 @@
               ],
               "env": {}
             },
+            "Antigravity": {
+              "command": "npx",
+              "args": [
+                "-y",
+                "google-antigravity-acp"
+              ],
+              "env": {}
+            },
             "Codex CLI": {
               "command": "npx",
               "args": [
-                "@zed-industries/codex-acp@latest"
+                "@agentclientprotocol/codex-acp@latest"
               ],
               "env": {}
             },
@@ -370,6 +486,11 @@
             }
           }
         },
+        "acp.chat.nativeEdits": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Send agent file edits to VS Code's native chat edit UI (`textEdit` / `externalEdit`, proposed API). Agent host sessions (e.g. Copilot CLI) reject these calls; there the extension falls back to snapshotting files and showing a diff with Keep/Undo in the response."
+        },
         "acp.autoApprovePermissions": {
           "type": "string",
           "enum": [
@@ -401,11 +522,14 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "test": "vscode-test"
+    "test": "vscode-test --label unit",
+    "test:e2e": "npm run compile && npm run compile-tests && vscode-test --label e2e",
+    "test:ui": "zsh scripts/ui-screenshots.sh"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.21.1",
     "@vscode/extension-telemetry": "^1.5.0",
+    "diff": "^9.0.0",
     "marked": "^15.0.0"
   },
   "devDependencies": {

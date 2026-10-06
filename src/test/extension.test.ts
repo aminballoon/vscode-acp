@@ -5,11 +5,11 @@ suite('Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
 
 	test('Extension should be present', () => {
-		assert.ok(vscode.extensions.getExtension('formulahendry.acp-client'));
+		assert.ok(vscode.extensions.getExtension('aminballoon.acp-agents'));
 	});
 
 	test('Should activate extension', async () => {
-		const ext = vscode.extensions.getExtension('formulahendry.acp-client');
+		const ext = vscode.extensions.getExtension('aminballoon.acp-agents');
 		assert.ok(ext);
 		await ext.activate();
 		assert.strictEqual(ext.isActive, true);

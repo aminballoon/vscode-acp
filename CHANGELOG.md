@@ -4,6 +4,21 @@ All notable changes to the "vscode-acp" extension will be documented in this fil
 
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [Unreleased] - fork: ACP Agents
+
+### Added
+- `@acp` chat participant in VS Code's native Chat view that drives the connected ACP agent (messages, thinking, tool calls, plans, cancellation).
+- Copilot-style edit review: agent edits are tracked as native chat edits ("files changed" bar, inline diff, Keep / Undo), both for client-side writes and for agents that write files themselves.
+- ACP permission requests shown as native tool confirmations (Allow / Skip) with a diff preview.
+- Fallback for agent-host chat sessions: snapshot-and-compare change tracking, diff card with Keep / Undo, and a persistent **Pending Changes** view.
+- `acp.chat.nativeEdits` setting.
+- Antigravity agent preset.
+- End-to-end tests with a fake ACP agent, plus a UI test that drives the real Chat view and captures screenshots.
+
+### Changed
+- Renamed to `aminballoon.acp-agents`; requires VS Code 1.140 and `--enable-proposed-api`.
+- Codex preset now uses `@agentclientprotocol/codex-acp@latest` (the `@zed-industries` package is no longer maintained).
+
 ## [0.2.0] - 2026-05-16
 
 ### Added

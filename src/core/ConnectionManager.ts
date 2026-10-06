@@ -7,8 +7,10 @@ import { Readable, Writable } from 'node:stream';
 import { AcpClientImpl } from './AcpClientImpl';
 import { FileSystemHandler } from '../handlers/FileSystemHandler';
 import { TerminalHandler } from '../handlers/TerminalHandler';
-import { PermissionHandler } from '../handlers/PermissionHandler';
+import { PermissionHandler, InlinePermissionPrompter } from '../handlers/PermissionHandler';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
+import type { ChangeTracker } from '../changes/ChangeTracker';
+import type { TurnRouter } from '../chat/TurnRouter';
 import { log, logError, logTraffic } from '../utils/Logger';
 import { version as extensionVersion } from '../../package.json';
 
@@ -24,9 +26,20 @@ export interface ConnectionInfo {
  */
 export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
+  private permissionPrompter?: InlinePermissionPrompter;
+  private turnRouter?: TurnRouter;
+
+  setTurnRouter(router: TurnRouter | undefined): void {
+    this.turnRouter = router;
+  }
+
+  setPermissionPrompter(prompter: InlinePermissionPrompter | undefined): void {
+    this.permissionPrompter = prompter;
+  }
 
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
+    private readonly changeTracker?: ChangeTracker,
   ) {}
 
   /**
@@ -50,9 +63,9 @@ export class ConnectionManager {
     const tappedStream = this.tapStream(stream);
 
     // Create handlers
-    const fsHandler = new FileSystemHandler();
+    const fsHandler = new FileSystemHandler(this.changeTracker, () => this.turnRouter);
     const terminalHandler = new TerminalHandler();
-    const permissionHandler = new PermissionHandler();
+    const permissionHandler = new PermissionHandler(() => this.permissionPrompter);
 
     // Create client implementation
     const client = new AcpClientImpl(

@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { marked } from 'marked';
 import { SessionManager } from '../core/SessionManager';
 import { SessionUpdateHandler, SessionUpdateListener } from '../handlers/SessionUpdateHandler';
-import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { SessionNotification, RequestPermissionRequest } from '@agentclientprotocol/sdk';
+import { diffLines } from 'diff';
 import { logError } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 
@@ -16,6 +17,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private updateListener: SessionUpdateListener;
   private _hasChatContent = false;
+  private pendingPermissions = new Map<string, (answer: string) => void>();
+  private permissionCounter = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -92,6 +95,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             await vscode.commands.executeCommand(message.command);
           }
           break;
+        case 'permissionResponse':
+          this.pendingPermissions.get(message.id)?.(message.optionId);
+          break;
         case 'ready':
           // Webview loaded — send current session state
           this.sendCurrentState();
@@ -111,6 +117,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.onDidDispose(() => {
       this.view = undefined;
+      this.cancelPendingPermissions();
     });
   }
 
@@ -205,7 +212,50 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Handle cancel request from webview.
    */
+  /**
+   * Show a permission request inside the chat view.
+   * Returns undefined when the chat view is not available (caller falls back to QuickPick).
+   */
+  requestPermission(params: RequestPermissionRequest): Promise<string | undefined> {
+    if (!this.view) { return Promise.resolve(undefined); }
+    const id = `perm-${++this.permissionCounter}`;
+    const diffs: Array<{ path: string; lines: Array<{ t: string; s: string }> }> = [];
+    for (const c of (params.toolCall?.content ?? []) as any[]) {
+      if (c?.type !== 'diff' || typeof c.newText !== 'string') { continue; }
+      const lines: Array<{ t: string; s: string }> = [];
+      for (const part of diffLines(c.oldText ?? '', c.newText)) {
+        const t = part.added ? '+' : part.removed ? '-' : ' ';
+        const rows = part.value.replace(/\n$/, '').split('\n');
+        // Collapse long unchanged runs
+        const shown = t === ' ' && rows.length > 6 ? [...rows.slice(0, 2), '…', ...rows.slice(-2)] : rows;
+        for (const s of shown) { lines.push({ t, s }); }
+      }
+      diffs.push({ path: c.path, lines: lines.slice(0, 200) });
+    }
+    this.view.show?.(true);
+    return new Promise(resolve => {
+      this.pendingPermissions.set(id, (answer: string) => {
+        this.pendingPermissions.delete(id);
+        const opt = params.options.find(o => o.optionId === answer);
+        this.postMessage({ type: 'permissionResolved', id, label: opt?.name ?? 'Cancelled' });
+        resolve(answer);
+      });
+      this.postMessage({
+        type: 'permissionRequest',
+        id,
+        title: params.toolCall?.title || 'Permission Request',
+        options: params.options.map(o => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
+        diffs,
+      });
+    });
+  }
+
+  private cancelPendingPermissions(): void {
+    for (const resolve of [...this.pendingPermissions.values()]) { resolve('cancelled'); }
+  }
+
   private async handleCancelTurn(): Promise<void> {
+    this.cancelPendingPermissions();
     const activeId = this.sessionManager.getActiveSessionId();
     if (activeId) {
       try {
@@ -623,6 +673,43 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     .turn-tools-list.collapsed { display: none; }
 
     /* Compact inline tool call */
+    .perm-card {
+      margin: 8px 0;
+      padding: 8px 10px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background);
+      font-size: 0.9em;
+    }
+    .perm-title { font-weight: 600; margin-bottom: 6px; }
+    .perm-diff {
+      margin: 6px 0;
+      max-height: 220px;
+      overflow: auto;
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.85em;
+      white-space: pre;
+      border-radius: 4px;
+      background: var(--vscode-editor-background);
+    }
+    .perm-diff .perm-path { padding: 2px 6px; opacity: 0.7; }
+    .perm-diff .add { background: var(--vscode-diffEditor-insertedLineBackground, rgba(0,160,0,0.2)); }
+    .perm-diff .del { background: var(--vscode-diffEditor-removedLineBackground, rgba(200,0,0,0.2)); }
+    .perm-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .perm-actions button {
+      padding: 3px 10px;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      color: var(--vscode-button-secondaryForeground);
+      background: var(--vscode-button-secondaryBackground);
+    }
+    .perm-actions button.allow {
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+    }
+    .perm-done { opacity: 0.75; margin-top: 4px; }
+
     .tool-call-inline {
       display: flex;
       align-items: center;
@@ -2294,6 +2381,61 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           thoughtStartTime = null;
           thoughtEndTime = null;
           break;
+
+        case 'permissionRequest': {
+          hideEmpty();
+          const card = document.createElement('div');
+          card.className = 'perm-card';
+          card.id = msg.id;
+          const titleEl = document.createElement('div');
+          titleEl.className = 'perm-title';
+          titleEl.textContent = '\u26A0 ' + msg.title;
+          card.appendChild(titleEl);
+          (msg.diffs || []).forEach(function (d) {
+            const box = document.createElement('div');
+            box.className = 'perm-diff';
+            const p = document.createElement('div');
+            p.className = 'perm-path';
+            p.textContent = d.path;
+            box.appendChild(p);
+            d.lines.forEach(function (l) {
+              const row = document.createElement('div');
+              row.className = l.t === '+' ? 'add' : l.t === '-' ? 'del' : '';
+              row.textContent = (l.t === ' ' ? '  ' : l.t + ' ') + l.s;
+              box.appendChild(row);
+            });
+            card.appendChild(box);
+          });
+          const actions = document.createElement('div');
+          actions.className = 'perm-actions';
+          msg.options.forEach(function (o) {
+            const b = document.createElement('button');
+            b.textContent = o.name;
+            if (o.kind.indexOf('allow') === 0) b.className = 'allow';
+            b.addEventListener('click', function () {
+              actions.querySelectorAll('button').forEach(function (x) { x.disabled = true; });
+              vscode.postMessage({ type: 'permissionResponse', id: msg.id, optionId: o.optionId });
+            });
+            actions.appendChild(b);
+          });
+          card.appendChild(actions);
+          messagesEl.appendChild(card);
+          scrollToBottom();
+          break;
+        }
+
+        case 'permissionResolved': {
+          const card = document.getElementById(msg.id);
+          if (card) {
+            const a = card.querySelector('.perm-actions');
+            if (a) a.remove();
+            const done = document.createElement('div');
+            done.className = 'perm-done';
+            done.textContent = '\u2192 ' + msg.label;
+            card.appendChild(done);
+          }
+          break;
+        }
 
         case 'clearChat':
           chatHistory = [];

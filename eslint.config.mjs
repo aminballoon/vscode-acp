@@ -2,6 +2,8 @@ import { defineConfig } from "eslint/config";
 import typescriptEslint from "typescript-eslint";
 
 export default defineConfig({
+	ignores: ["src/proposed/**"],
+}, {
 	files: ["**/*.ts"],
 	extends: typescriptEslint.configs.recommended,
 	rules: {

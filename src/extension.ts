@@ -4,6 +4,12 @@ import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
 import { SessionManager } from './core/SessionManager';
 import { SessionHistoryStore } from './core/SessionHistoryStore';
+import { ChangeTracker } from './changes/ChangeTracker';
+import { VsCodeFileIO } from './changes/VsCodeFileIO';
+import { registerChangesView } from './changes/ChangesView';
+import { TurnRouter } from './chat/TurnRouter';
+import { PermissionTool, PERMISSION_TOOL } from './chat/PermissionTool';
+import { registerChatParticipant, chatRequestCount } from './chat/AcpChatParticipant';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
@@ -13,7 +19,14 @@ import { fetchRegistry } from './config/RegistryClient';
 import { log, logError, disposeChannels, getOutputChannel, getTrafficChannel } from './utils/Logger';
 import { initTelemetry, sendEvent } from './utils/TelemetryManager';
 
-export function activate(context: vscode.ExtensionContext): void {
+/** Exposed for integration tests. */
+export interface AcpExtensionApi {
+  changeTracker: ChangeTracker;
+  chatHandler: vscode.ChatRequestHandler;
+  chatRequestCount(): number;
+}
+
+export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   log('ACP Client extension activating...');
 
   // --- Telemetry ---
@@ -23,7 +36,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // --- Core services ---
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
-  const connectionManager = new ConnectionManager(sessionUpdateHandler);
+  const fileIO = new VsCodeFileIO();
+  const changeTracker = new ChangeTracker(fileIO, context.workspaceState, log);
+  const connectionManager = new ConnectionManager(sessionUpdateHandler, changeTracker);
   const sessionManager = new SessionManager(
     agentManager,
     connectionManager,
@@ -54,6 +69,16 @@ export function activate(context: vscode.ExtensionContext): void {
     chatWebviewProvider,
     { webviewOptions: { retainContextWhenHidden: true } },
   );
+
+  // Native chat turns take precedence; the sidebar webview is the fallback.
+  const permissionTool = new PermissionTool();
+  context.subscriptions.push(vscode.lm.registerTool(PERMISSION_TOOL, permissionTool));
+  const turnRouter = new TurnRouter(changeTracker, permissionTool);
+  connectionManager.setTurnRouter(turnRouter);
+  connectionManager.setPermissionPrompter(
+    params => turnRouter.requestPermission(params) ?? chatWebviewProvider.requestPermission(params),
+  );
+  const chatHandler = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker);
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
@@ -101,6 +126,32 @@ export function activate(context: vscode.ExtensionContext): void {
   sessionManager.on('session-info-changed', (sessionId: string, update: any) => {
     if (sessionId !== sessionManager.getActiveSessionId()) { return; }
     chatWebviewProvider.notifySessionInfoUpdate(update?.title);
+  });
+
+  // --- Pending changes (Keep / Undo) ---
+  registerChangesView(context, changeTracker, fileIO);
+
+  // Agents that write files themselves report diffs via tool_call content.
+  // Ignore replayed history while a session is being loaded.
+  let replaying = false;
+  sessionManager.on('session-load-start', () => { replaying = true; });
+  sessionManager.on('session-load-end', () => { replaying = false; });
+  sessionUpdateHandler.addListener((n) => {
+    const u: any = n.update;
+    const kind = u?.sessionUpdate;
+    // The native chat edit UI already tracks edits of an active chat turn
+    if (replaying || (turnRouter.nativeEnabled && turnRouter.get(n.sessionId)) || (kind !== 'tool_call' && kind !== 'tool_call_update')) { return; }
+    for (const c of u.content ?? []) {
+      if (c?.type === 'diff' && typeof c.path === 'string' && typeof c.newText === 'string') {
+        void changeTracker.noteExternalDiff(vscode.Uri.file(c.path).fsPath, c.oldText, c.newText)
+          .catch(e => logError('noteExternalDiff failed', e));
+      }
+    }
+    // During a chat turn the participant snapshots/compares edits itself; pruning
+    // here would drop baselines captured before the agent's write lands.
+    if (!turnRouter.get(n.sessionId) && kind === 'tool_call_update' && (u.status === 'failed' || u.status === 'completed')) {
+      void changeTracker.prune().catch(e => logError('prune failed', e));
+    }
   });
 
   // --- Commands ---
@@ -530,8 +581,9 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   );
 
-  sendEvent('extension/activated', { version: vscode.extensions.getExtension('formulahendry.acp-client')?.packageJSON?.version ?? 'unknown' });
+  sendEvent('extension/activated', { version: vscode.extensions.getExtension('aminballoon.acp-agents')?.packageJSON?.version ?? 'unknown' });
   log('ACP Client extension activated.');
+  return { changeTracker, chatHandler, chatRequestCount: () => chatRequestCount };
 }
 
 export function deactivate(): void {

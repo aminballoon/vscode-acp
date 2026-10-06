@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { log, logError } from '../utils/Logger';
+import type { ChangeTracker } from '../changes/ChangeTracker';
+import type { TurnRouter } from '../chat/TurnRouter';
 
 import type {
   ReadTextFileRequest,
@@ -13,6 +15,11 @@ import type {
  * This gives us access to unsaved editor buffers automatically.
  */
 export class FileSystemHandler {
+
+  constructor(
+    private readonly tracker?: ChangeTracker,
+    private readonly getRouter?: () => TurnRouter | undefined,
+  ) {}
 
   /**
    * Read a text file. Uses VS Code API to include unsaved editor content.
@@ -28,8 +35,13 @@ export class FileSystemHandler {
         doc => doc.uri.fsPath === uri.fsPath
       );
 
+      // A native chat edit may not have reached the editor buffer yet
+      const recent = this.getRouter?.()?.recentlyWritten(params.sessionId, uri.fsPath);
+
       let content: string;
-      if (openDoc) {
+      if (recent !== undefined) {
+        content = recent;
+      } else if (openDoc) {
         content = openDoc.getText();
       } else {
         const raw = await vscode.workspace.fs.readFile(uri);
@@ -62,8 +74,16 @@ export class FileSystemHandler {
     log(`writeTextFile: ${params.path}`);
 
     try {
+      // Native chat edit (per-hunk Keep/Undo) when a chat turn is streaming
+      if (await this.getRouter?.()?.nativeWrite(params)) {
+        return {};
+      }
+
       const uri = vscode.Uri.file(params.path);
       const encoded = Buffer.from(params.content, 'utf-8');
+
+      // Record baseline so the change stays pending until the user keeps it
+      await this.tracker?.beforeAgentWrite(uri.fsPath, params.content);
 
       await vscode.workspace.fs.writeFile(uri, encoded);
 

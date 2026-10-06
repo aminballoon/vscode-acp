@@ -8,7 +8,12 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
  * Handles ACP permission requests from agents.
  * Shows VS Code QuickPick for user to select from agent-provided options.
  */
+/** Renders a permission request in the chat webview. Resolves to an optionId, 'cancelled', or undefined if no UI is available. */
+export type InlinePermissionPrompter = (params: RequestPermissionRequest) => Promise<string | undefined> | undefined;
+
 export class PermissionHandler {
+  constructor(private readonly getInlinePrompter?: () => InlinePermissionPrompter | undefined) {}
+
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const config = vscode.workspace.getConfiguration('acp');
     const autoApprove = config.get<string>('autoApprovePermissions', 'none');
@@ -29,6 +34,21 @@ export class PermissionHandler {
             optionId: allowOption.optionId,
           },
         };
+      }
+    }
+
+    // Prefer the in-chat prompt; fall back to QuickPick when the chat view is unavailable
+    const inline = this.getInlinePrompter?.();
+    if (inline) {
+      sendEvent('permission/requested', { permissionType: title, autoApproved: 'false' });
+      const answer = await inline(params);
+      if (answer !== undefined) {
+        if (answer === 'cancelled') {
+          sendEvent('permission/responded', { permissionType: title, outcome: 'cancelled' });
+          return { outcome: { outcome: 'cancelled' } };
+        }
+        sendEvent('permission/responded', { permissionType: title, action: answer, outcome: 'selected' });
+        return { outcome: { outcome: 'selected', optionId: answer } };
       }
     }
 

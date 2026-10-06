@@ -1,0 +1,15 @@
+{
+  "name": "acp-test-fake-lm",
+  "displayName": "ACP Test Fake LM",
+  "description": "Test-only: registers a dummy language model so the Chat view accepts requests in a profile without Copilot sign-in.",
+  "version": "0.0.1",
+  "publisher": "aminballoon",
+  "engines": { "vscode": "^1.104.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "languageModelChatProviders": [
+      { "vendor": "acp-test", "displayName": "ACP Test" }
+    ]
+  }
+}

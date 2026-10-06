@@ -1,166 +1,190 @@
-# ACP Client for VS Code
+# ACP Agents for VS Code
 
-A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) that provides a client for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) — connect to any ACP-compatible AI coding agent directly from your editor.
+Chat with any [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) coding agent — Claude Code, Codex, Antigravity, Qwen Code and more — **inside VS Code's native Chat view**, with the same edit-review experience as GitHub Copilot: native tool confirmations, a "files changed" bar, inline diffs and Keep / Undo.
 
-![ACP Client Screenshot](resources/screenshot.png)
+Each agent runs as its own official CLI, so you use your existing subscription / OAuth login for that vendor. The extension never handles vendor tokens itself.
+
+> This is a fork of [formulahendry/vscode-acp](https://github.com/formulahendry/vscode-acp) (MIT). It adds a chat participant built on VS Code's proposed chat APIs, so it is installed from a `.vsix`, not from the Marketplace. See [Installation](#installation).
+
+## Screenshots
+
+**The agent asks before editing.** The confirmation is VS Code's own Allow / Skip UI, with a preview of the change. It disappears once you answer.
+
+![Native permission confirmation](docs/images/permission-confirmation.png)
+
+**Edits are reviewed like Copilot's.** You get the "1 file changed" bar with Keep / Undo, an inline diff in the editor, and per-change navigation.
+
+![Native Keep / Undo after an agent edit](docs/images/native-keep-undo.png)
+
+<sub>Screenshots come from the automated UI test (`npm run test:ui`), which uses a fake agent and a placeholder model, so the model picker reads "ACP Test".</sub>
 
 ## Features
 
-- **Multi-Agent Support**: Connect to 11 pre-configured ACP agents or add your own
-- **Single-Agent Focus**: One agent active at a time — seamlessly switch between agents
-- **Per-Agent Session List**: Each agent in the Agents view is expandable into its previous sessions. Click a session to restore its history in the chat. Backed by `session/list` when the agent supports it, or by a local per-workspace cache otherwise.
-- **Session Config Options**: Dynamic per-session selectors (mode, model, reasoning level, …) advertised by the agent are rendered automatically in the composer toolbar.
-- **Interactive Chat**: Built-in chat panel with Markdown rendering, inline tool call display, and collapsible tool sections
-- **Thinking Display**: See agent reasoning in a collapsible block with streaming animation and elapsed time
-- **Slash Commands**: Autocomplete popup for agent-provided commands with keyboard navigation
-- **Mode & Model Picker**: Switch agent modes and models directly from the chat toolbar (kept for agents that haven't migrated to Session Config Options yet)
-- **File System Integration**: Agents can read and write files in your workspace
-- **Terminal Execution**: Agents can run commands with terminal output display
-- **Permission Management**: Configurable auto-approve policies for agent actions
-- **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
-- **Agent Registry**: Browse and discover available ACP agents
-- **Chat Persistence**: Conversations are preserved when switching panels
-
-## Quick Start
-
-1. Install: [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) | [Open in VS Code](https://vscode.dev/redirect?url=vscode%3Aextension%2Fformulahendry.acp-client) | [Open VSX Marketplace](https://open-vsx.org/extension/formulahendry/acp-client)
-2. Open the ACP Client panel from the Activity Bar (ACP icon)
-3. Click **+** to add an agent configuration, or use the defaults
-4. Click an agent to connect
-5. Start chatting!
+- **`@acp` chat participant** in the native Chat view. It drives whichever agent is connected.
+  - Streams agent messages, thinking, tool calls and plans as native chat parts.
+  - Cancel works the same as in Copilot.
+- **Copilot-style edit review.**
+  - Agent edits become pending chat edits, whether the agent writes files through the client (`fs/write_text_file`) or on its own.
+  - Review them in the "files changed" bar and inline diffs, then Keep or Undo, per file or per hunk.
+- **Native permission prompts.** ACP `session/request_permission` is shown as a VS Code tool confirmation (Allow / Allow in this Session / Skip) with a diff preview.
+- **Fallback where native edits are blocked.**
+  - Agent-host chat sessions (e.g. Copilot CLI) reject extension edits.
+  - There the extension snapshots files before the agent edits them, then shows a diff card with Keep / Undo / Open diff.
+  - Pending changes persist across restarts in the **Pending Changes** view.
+- **Everything from the upstream ACP Client:**
+  - Multi-agent configuration with per-agent session lists.
+  - The sidebar chat webview.
+  - Session config options (mode / model pickers).
+  - Terminal execution.
+  - Protocol traffic logging.
+  - The agent registry.
 
 ## Requirements
 
-- Node.js 18+ (for spawning agent processes)
-- An ACP-compatible agent installed or available via `npx`
+- **VS Code 1.140.x.** The extension uses proposed APIs (`chatParticipantAdditions`, `chatParticipantPrivate`) whose shape can change between releases.
+- **Node.js 18+**, available from a login shell (`/bin/zsh -l -c 'node -v'`). Agents are launched through your login shell.
+- **The CLI for each agent you want to use**, already logged in. For example:
+  - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`, then run `claude` and `/login`.
+  - Codex: installed and logged in with `codex`.
+  - Antigravity: `agy` on your `PATH`.
+
+## Installation
+
+The proposed APIs mean this extension cannot be published to the Marketplace. Build it once and install the `.vsix`:
+
+```bash
+git clone <this repo> && cd vscode-acp
+npm install
+npx vsce package --no-dependencies          # -> acp-agents-<version>.vsix
+code --install-extension acp-agents-*.vsix
+```
+
+Then allow the proposed APIs for this extension:
+
+1. Run **Preferences: Configure Runtime Arguments** from the Command Palette. This opens `~/.vscode/argv.json`.
+2. Add:
+   ```jsonc
+   "enable-proposed-api": ["aminballoon.acp-agents"]
+   ```
+3. Quit VS Code completely (`Cmd+Q`) and reopen it.
+
+Recommended:
+- Set `"update.mode": "manual"` so a VS Code update cannot break the proposed APIs unexpectedly.
+- If you have the original **ACP Client** (`formulahendry.acp-client`) installed, uninstall it. Both register the same commands.
+
+To update after pulling changes, rebuild the `.vsix` and reinstall it:
+
+```bash
+npx vsce package --no-dependencies && code --install-extension acp-agents-*.vsix --force
+```
+
+Then run **Developer: Reload Window**.
+
+## Usage
+
+1. Open the **ACP** view in the Activity Bar and click **Connect** on an agent.
+2. Open the Chat view (`Ctrl+Cmd+I` / `Ctrl+Alt+I`) and start a new chat. Use a **Local** session, not "Copilot CLI".
+3. Type `@acp` followed by your request. Follow-up messages in the same chat stay with `@acp`.
+4. When the agent wants to edit a file or run a command, approve it with **Allow** or decline with **Skip**.
+5. Review the changes in the "files changed" bar or the editor, then **Keep** or **Undo**.
+
+Tips:
+- **Per-chat sessions:** `@acp` uses the agent's active ACP session. Use **ACP: New Conversation** to start a fresh agent session.
+- **Copilot CLI sessions:** these sessions block extension edits. There you get the fallback diff card, and changes stay in the **Pending Changes** view until you Keep or Undo them.
+- **Debugging:** **ACP: Show Log** and **ACP: Show Protocol Traffic** show what the agent sends. They are useful for checking how a given adapter reports edits.
 
 ## Pre-configured Agents
-
-The extension comes with default configurations for:
 
 | Agent | Command |
 |-------|---------|
 | GitHub Copilot | `npx @github/copilot-language-server@latest --acp` |
 | Claude Code | `npx @agentclientprotocol/claude-agent-acp@latest` |
+| Codex CLI | `npx @agentclientprotocol/codex-acp@latest` |
+| Antigravity | `npx -y google-antigravity-acp` |
 | Gemini CLI | `npx @google/gemini-cli@latest --experimental-acp` |
 | Qwen Code | `npx @qwen-code/qwen-code@latest --acp --experimental-skills` |
 | Auggie CLI | `npx @augmentcode/auggie@latest --acp` |
 | Qoder CLI | `npx @qoder-ai/qodercli@latest --acp` |
-| Codex CLI | `npx @zed-industries/codex-acp@latest` |
 | OpenCode | `npx opencode-ai@latest acp` |
 | OpenClaw | `npx openclaw acp` |
 | [Kiro CLI](https://kiro.dev/docs/cli/acp/) | `kiro-cli acp` |
 | [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp) | `hermes acp` |
 
-You can add custom agent configurations in settings.
+Add your own with **ACP: Add Agent Configuration** or the `acp.agents` setting.
 
-> **Note on Hermes Agent**: Hermes is a Python package, not an npm package. Install it via the [Hermes Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) (Linux/macOS/WSL2 only — Windows requires [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)). Make sure `hermes` is on your `PATH` and launch VS Code from the same shell/venv. Configure credentials with `hermes model`.
-
-## Extension Settings
+## Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `acp.agents` | *(11 agents)* | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
-| `acp.autoApprovePermissions` | `ask` | How agent permission requests are handled: `ask` or `allowAll`. |
-| `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
-| `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
+| `acp.agents` | *(see above)* | Agent configurations. Each key is the agent name; the value has `command`, `args` and `env`. |
+| `acp.chat.nativeEdits` | `true` | Route agent edits into VS Code's native chat edit UI. Agent-host sessions fall back automatically. |
+| `acp.autoApprovePermissions` | `ask` | `ask` shows a confirmation; `allowAll` approves every request. |
+| `acp.defaultWorkingDirectory` | `""` | Working directory for agent sessions. Empty uses the current workspace. |
+| `acp.logTraffic` | `true` | Log all ACP traffic to the **ACP Traffic** output channel. |
 
 ## Commands
 
-All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
-
 | Command | Description |
 |---------|-------------|
-| `ACP: Connect to Agent` | Connect to an agent |
-| `ACP: New Conversation` | Start a new conversation with the connected agent |
-| `ACP: Send Prompt` | Send a message to the agent |
-| `ACP: Cancel Current Turn` | Cancel the current agent turn |
-| `ACP: Disconnect Agent` | Disconnect from the current agent |
-| `ACP: Restart Agent` | Restart the current agent process |
-| `ACP: Open Chat Panel` | Focus the chat webview |
-| `ACP: Add Agent Configuration` | Add a new agent to settings |
-| `ACP: Remove Agent` | Remove an agent configuration |
-| `ACP: Set Agent Mode` | Change the agent's operating mode |
-| `ACP: Set Agent Model` | Change the agent's model |
-| `ACP: Refresh Sessions` | Re-fetch the session list for an agent (also on the agent's right-click menu) |
-| `ACP: Show Log` | Open the ACP Client log output channel |
-| `ACP: Show Protocol Traffic` | Open the ACP Traffic output channel |
-| `ACP: Browse Agent Registry` | Browse the ACP agent registry |
+| `ACP: Connect to Agent` / `Disconnect Agent` / `Restart Agent` | Manage the agent process |
+| `ACP: New Conversation` | Start a new session with the connected agent |
+| `ACP: Keep All Changes` / `Undo All Changes` | Resolve everything in the Pending Changes view |
+| `ACP: Add Agent Configuration` / `Remove Agent` | Edit `acp.agents` |
+| `ACP: Show Log` / `Show Protocol Traffic` | Output channels for debugging |
+| `ACP: Browse Agent Registry` | Discover ACP agents |
 
-## Keyboard Shortcuts
+## How It Works
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Shift+A` (`Cmd+Shift+A` on Mac) | Open Chat Panel |
-| `Escape` (when turn in progress) | Cancel Current Turn |
+```
+VS Code Chat view ──@acp──▶ AcpChatParticipant ──session/prompt──▶ agent CLI (ACP over stdio)
+        ▲                         │  ▲                                   │
+        │ native parts            │  └── session/update (text, tools) ───┤
+        │ (tool calls, edits,     ▼                                      │
+        │  confirmations)     TurnRouter ◀── fs/write_text_file, ────────┘
+        └──────────────────── PermissionTool    request_permission
+```
+
+The main pieces:
+- **`src/chat/AcpChatParticipant.ts`:** maps ACP session updates to chat parts.
+  - For agents that edit files themselves, it wraps the edit tool call in `externalEdit`, so VS Code tracks the disk change natively.
+- **`src/chat/TurnRouter.ts`:** connects client-side ACP requests to the chat turn that is streaming. It handles file writes (`textEdit`) and permission prompts.
+- **`src/chat/PermissionTool.ts`:** an internal language-model tool, invoked only to show VS Code's native confirmation UI.
+- **`src/chat/proposed.ts`:** the only file that calls proposed APIs, with feature detection. If a VS Code update changes these APIs, this is the file to fix.
+- **`src/changes/`:** the session-type-independent fallback. It snapshots files, tracks pending changes, and provides the Pending Changes view.
 
 ## Development
 
-### Prerequisites
-
-- Node.js 18+
-- VS Code 1.85+
-
-### Setup
-
 ```bash
-git clone https://github.com/formulahendry/vscode-acp.git
-cd vscode-acp
 npm install
+npm run watch       # or: npm run compile
 ```
 
-### Build & Run
+Press `F5` to start the Extension Development Host. `.vscode/launch.json` already passes `--enable-proposed-api`.
 
-```bash
-npm run compile    # One-time build
-npm run watch      # Watch mode for development
-```
+Tests:
 
-Press `F5` in VS Code to launch the Extension Development Host.
+| Command | What it runs |
+|---------|--------------|
+| `npm test` | Unit smoke test |
+| `npm run test:e2e` | Calls the `@acp` handler directly against a fake ACP agent (`test-fixtures/fake-agent.mjs`). Covers approve, reject, keep and undo. |
+| `npm run test:ui` | macOS only. Drives the real Chat view in the installed VS Code and saves screenshots of the test window to `.vscode-test/screenshots/`. Needs Screen Recording permission for your terminal. |
 
-### Testing
+The fake agent copies the message order Claude Code uses for edits:
+1. A `tool_call` with empty locations.
+2. Locations in a later update.
+3. `request_permission`.
+4. The agent writes the file itself.
+5. `completed`.
 
-```bash
-npm run pretest    # Compile tests + lint
-npm test           # Run tests
-```
+`test-fixtures/fake-lm` registers a placeholder language model, because the Chat view refuses requests in a profile with no model.
 
-### Packaging
+## Known Limitations
 
-```bash
-npm run package    # Production build
-npx @vscode/vsce package   # Create .vsix
-```
+- Proposed APIs: install from `.vsix` only, and VS Code updates may need code changes in `src/chat/proposed.ts`.
+- The native confirmation shows an "Input" section, a short JSON summary of the action. VS Code does not offer a way to hide it for extension tools.
+- Native Keep / Undo works only in **Local** chat sessions. Agent-host sessions (Copilot CLI and similar) get the fallback diff card.
+- "Allow in this Session" is remembered by VS Code, not passed to the agent as `allow_always`.
 
-## Architecture
+## Credits & License
 
-The extension follows a modular architecture:
-
-- **Core**: `AgentManager`, `ConnectionManager`, `SessionManager`, `AcpClientImpl`
-- **Handlers**: `FileSystemHandler`, `TerminalHandler`, `PermissionHandler`, `SessionUpdateHandler`
-- **UI**: `SessionTreeProvider`, `ChatWebviewProvider`, `StatusBarManager`
-- **Config**: `AgentConfig`, `RegistryClient`
-- **Utils**: `Logger`, `StreamAdapter`
-
-Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio).
-
-## Known Issues
-
-- Agents must be available via the system PATH or `npx`
-- Some agents may require additional authentication setup
-- File attachment feature is not yet functional
-
-## Links
-
-- [ACP Client on Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client)
-- [Agent Client Protocol](https://agentclientprotocol.com/)
-- [GitHub Repository](https://github.com/formulahendry/vscode-acp)
-
-## Related Projects
-
-- [ACP UI](https://github.com/formulahendry/acp-ui) — A modern, cross-platform desktop client for the Agent Client Protocol (ACP)
-- [WeChat ACP](https://github.com/formulahendry/wechat-acp) — Bridge WeChat chat messages to any ACP-compatible AI agent (Claude, Codex, Copilot, Qwen, Gemini, OpenCode and more)
-
-## License
-
-MIT — see [LICENSE](LICENSE) for details.
+Based on [ACP Client](https://github.com/formulahendry/vscode-acp) by Jun Han. MIT — see [LICENSE](LICENSE).
