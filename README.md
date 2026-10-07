@@ -31,6 +31,11 @@ Each agent runs as its own official CLI, so you use your existing subscription /
   - Agent-host chat sessions (e.g. Copilot CLI) reject extension edits.
   - There the extension snapshots files before the agent edits them, then shows a diff card with Keep / Undo / Open diff.
   - Pending changes persist across restarts in the **Pending Changes** view.
+- **Chats keep their state.**
+  - Each chat in the ACP chat sessions list is saved and keeps its own agent, model, mode and permission choices.
+  - Reopening a chat after a restart shows its transcript and reattaches the agent's own session (`session/resume`, else `session/load`), so context is kept.
+  - Several agents can stay connected at once, one per chat.
+  - Agents idle for `acp.chat.idleDisconnectMinutes` are disconnected to free memory, but only if they can restore sessions. The next message reconnects with the chat unchanged.
 - **Everything from the upstream ACP Client:**
   - Multi-agent configuration with per-agent session lists.
   - The sidebar chat webview.
@@ -130,6 +135,7 @@ Add your own with **ACP: Add Agent Configuration** or the `acp.agents` setting.
 |---------|---------|-------------|
 | `acp.agents` | *(see above)* | Agent configurations. Each key is the agent name; the value has `command`, `args` and `env`. |
 | `acp.chat.nativeEdits` | `true` | Route agent edits into VS Code's native chat edit UI. Agent-host sessions fall back automatically. |
+| `acp.chat.idleDisconnectMinutes` | `15` | Disconnect an idle agent used by ACP chats after this many minutes (`0` = never). Only agents that support `session/resume` or `session/load` are disconnected. |
 | `acp.autoApprovePermissions` | `ask` | `ask` shows a confirmation; `allowAll` approves every request. |
 | `acp.defaultWorkingDirectory` | `""` | Working directory for agent sessions. Empty uses the current workspace. |
 | `acp.logTraffic` | `true` | Log all ACP traffic to the **ACP Traffic** output channel. |

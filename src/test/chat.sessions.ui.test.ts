@@ -27,6 +27,15 @@ suite('ACP chat session type UI', function () {
     const api = await connectFakeAgent({ 'chat.nativeEdits': true }, 'Claude Code (fake)');
     await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(target));
 
+    // A chat saved by an earlier run (a fresh VS Code process) should reopen with its history
+    const saved = api.acpChats().find(c => c.turns.length);
+    if (saved) {
+      await vscode.commands.executeCommand('vscode.open', vscode.Uri.parse(`acp:/${saved.id}`));
+      await sleep(3000);
+      await shot('s00-restored');
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    }
+
     // Command contributed by VS Code for every chat session type
     await vscode.commands.executeCommand('workbench.action.chat.openNewChatSessionInPlace.acp', 'sidebar');
     await sleep(3000);

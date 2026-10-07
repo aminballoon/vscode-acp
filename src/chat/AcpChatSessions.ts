@@ -2,11 +2,14 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'node:crypto';
 
 import type { SessionInfo, SessionManager } from '../core/SessionManager';
+import type { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
+import type { ChatTurnRunner } from './AcpChatParticipant';
 import type { TurnRouter } from './TurnRouter';
+import { AcpChatStore, StoredChat, StoredTurn } from './AcpChatStore';
 import { getAgentNames } from '../config/AgentConfig';
 import { log, logError } from '../utils/Logger';
 
-import type { SessionConfigOption, SessionConfigSelectOption } from '@agentclientprotocol/sdk';
+import type { SessionConfigOption, SessionConfigSelectOption, SessionNotification } from '@agentclientprotocol/sdk';
 
 /** Chat session type contributed in package.json (`chatSessions`). */
 export const ACP_SESSION_TYPE = 'acp';
@@ -27,6 +30,14 @@ const PERMISSION_ITEMS: Item[] = [
   { id: 'ask', name: 'Ask', description: 'Confirm each file edit or command', default: true },
   { id: 'auto', name: 'Auto-approve', description: 'Approve every agent request without asking' },
 ];
+
+function chatResource(id: string): vscode.Uri {
+  return vscode.Uri.from({ scheme: ACP_SESSION_TYPE, path: `/${id}` });
+}
+
+function chatId(resource: vscode.Uri): string {
+  return resource.path.replace(/^\//, '');
+}
 
 /** Selected item id per option group. */
 type Selections = Partial<Record<string, string>>;
@@ -121,10 +132,23 @@ function agentChoices(session: SessionInfo | undefined) {
 export function registerAcpChatSessions(
   context: vscode.ExtensionContext,
   sessionManager: SessionManager,
+  sessionUpdateHandler: SessionUpdateHandler,
   router: TurnRouter,
-  handler: vscode.ChatRequestHandler,
-): vscode.ChatRequestHandler {
-  const controller = vscode.chat.createChatSessionItemController(ACP_SESSION_TYPE, async () => { /* sessions live in the ACP view */ });
+  runTurn: ChatTurnRunner,
+): { handler: vscode.ChatRequestHandler; store: AcpChatStore; disconnectIdleAgents(maxIdleMs: number): Promise<string[]> } {
+  const storageDir = (context.storageUri ?? context.globalStorageUri).fsPath;
+  const store = new AcpChatStore(`${storageDir}/acp-chats`);
+
+  const toItem = (chat: StoredChat): vscode.ChatSessionItem => {
+    const item = controller.createChatSessionItem(chatResource(chat.id), chat.label);
+    item.description = chat.agentName;
+    item.timing = { created: chat.createdAt, lastRequestEnded: chat.updatedAt };
+    return item;
+  };
+  const controller = vscode.chat.createChatSessionItemController(ACP_SESSION_TYPE, async () => {
+    await store.load();
+    controller.items.replace(store.list().filter(c => c.turns.length).map(toItem));
+  });
   const liveStates = new Set<vscode.ChatSessionInputState>();
   /** Agent each input state showed after our last update; a different value means the user picked it. */
   const shownAgent = new WeakMap<vscode.ChatSessionInputState, string | undefined>();
@@ -138,7 +162,7 @@ export function registerAcpChatSessions(
     }];
 
     // Model / effort / mode are only known once the selected agent is connected
-    const session = agent && sessionManager.getActiveAgentName() === agent.id ? sessionManager.getActiveSession() : undefined;
+    const session = agent ? sessionManager.getAgentSession(agent.id) : undefined;
     const choices = agentChoices(session);
     for (const choice of choices) {
       if (!choice.items.length) { continue; }
@@ -164,13 +188,17 @@ export function registerAcpChatSessions(
     shownAgent.set(state, selectionsOf(state.groups)[GROUP.agent]);
   };
 
-  /** Connect the selected agent (spawning it if needed) so its models etc. can be listed. */
+  /**
+   * Connect the selected agent (spawning it if needed) so its models etc. can be listed.
+   * Other agents stay connected, so each chat can keep its own agent.
+   */
   const ensureAgent = async (agentName: string | undefined): Promise<SessionInfo | undefined> => {
     if (!agentName) { return undefined; }
-    if (sessionManager.getActiveAgentName() === agentName) { return sessionManager.getActiveSession(); }
+    const existing = sessionManager.getAgentSession(agentName);
+    if (existing) { return existing; }
     return vscode.window.withProgress(
       { location: vscode.ProgressLocation.Window, title: `Connecting to ${agentName}…` },
-      () => sessionManager.connectToAgent(agentName),
+      () => sessionManager.connectToAgent(agentName, { exclusive: false }),
     );
   };
 
@@ -205,8 +233,9 @@ export function registerAcpChatSessions(
           refresh(state);
           return;
         }
-        const session = sessionManager.getActiveSession();
-        if (session && session.agentName === selected[GROUP.agent]) {
+        const agentName = selected[GROUP.agent];
+        const session = agentName ? sessionManager.getAgentSession(agentName) : undefined;
+        if (session) {
           await applySelections(session, selected);
         }
       } catch (e: any) {
@@ -216,39 +245,167 @@ export function registerAcpChatSessions(
     });
   };
 
-  controller.getChatSessionInputState = (_resource, { previousInputState }) => {
-    const state = controller.createChatSessionInputState(buildGroups(selectionsOf(previousInputState?.groups)));
+  controller.getChatSessionInputState = async (resource, { previousInputState }) => {
+    await store.load();
+    const saved = resource ? store.get(chatId(resource))?.selections : undefined;
+    const state = controller.createChatSessionInputState(buildGroups(saved ?? selectionsOf(previousInputState?.groups)));
     watch(state);
     return state;
   };
 
   controller.newChatSessionItemHandler = async ({ request }) => {
-    const item = controller.createChatSessionItem(
-      vscode.Uri.from({ scheme: ACP_SESSION_TYPE, path: `/${randomUUID()}` }),
-      request.prompt || request.command || 'ACP chat',
-    );
+    const chat = store.ensure(randomUUID(), request.prompt || request.command || 'ACP chat');
+    const item = toItem(chat);
     controller.items.add(item);
     return item;
   };
 
-  // Apply the toolbar selections, then hand over to the regular ACP handler
+  /** ACP sessions already bound to a chat; a fresh chat must not reuse them. */
+  const isClaimed = (sessionId: string) => store.list().some(c => c.acpSessionId === sessionId);
+
+  /**
+   * Reattach a chat to its agent session after the agent was disconnected
+   * (idle timeout, restart): session/resume when supported (no replay), else
+   * session/load. Neither calls the model; the agent reads its own saved history.
+   */
+  const restoreSession = async (agentName: string, sessionId: string): Promise<SessionInfo | undefined> => {
+    try {
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Window, title: `Reconnecting to ${agentName}…` },
+        () => sessionManager.ensureConnected(agentName),
+      );
+      const caps = sessionManager.getCachedCapabilities(agentName);
+      if (caps?.resume) { return await sessionManager.resumeSession(agentName, sessionId, { exclusive: false }); }
+      if (caps?.load) { return await sessionManager.loadSession(agentName, sessionId, { exclusive: false }); }
+    } catch (e) {
+      logError(`ACP session: could not restore ${sessionId}, starting a new one`, e);
+    }
+    return undefined;
+  };
+
+  /**
+   * The agent session for a chat: its own live session, a restored one after
+   * a disconnect or restart, the agent's still unused session, or a new one.
+   */
+  const sessionForChat = async (chat: StoredChat, agentName: string): Promise<SessionInfo> => {
+    const own = chat.agentName === agentName ? chat.acpSessionId : undefined;
+    if (own && sessionManager.getConnectionForSession(own)) {
+      return sessionManager.activateSession(own)!;
+    }
+    const restored = own && chat.turns.length ? await restoreSession(agentName, own) : undefined;
+    if (restored) { return restored; }
+    await ensureAgent(agentName);
+    const current = sessionManager.getAgentSession(agentName);
+    if (current && !isClaimed(current.sessionId)) { return sessionManager.activateSession(current.sessionId)!; }
+    return sessionManager.startNewSession(agentName);
+  };
+
+  /**
+   * Disconnect agents whose chats have been idle for `maxIdleMs`. Only agents
+   * that can restore a session (resume / load) are disconnected, so no chat
+   * loses its context; the next message reconnects transparently.
+   */
+  const disconnectIdleAgents = async (maxIdleMs: number): Promise<string[]> => {
+    const used = new Set(store.list().map(c => c.agentName));
+    const idle = sessionManager.getIdleAgentNames(maxIdleMs).filter(name => {
+      const caps = sessionManager.getCachedCapabilities(name);
+      return used.has(name) && (caps?.resume || caps?.load);
+    });
+    for (const name of idle) {
+      log(`ACP session: disconnecting idle agent ${name}`);
+      await sessionManager.disconnectAgent(name);
+    }
+    return idle;
+  };
+  const idleTimer = setInterval(() => {
+    const minutes = vscode.workspace.getConfiguration('acp').get<number>('chat.idleDisconnectMinutes', 15);
+    if (minutes > 0) {
+      disconnectIdleAgents(minutes * 60_000).catch(e => logError('ACP session: idle disconnect failed', e));
+    }
+  }, 60_000);
+  context.subscriptions.push({ dispose: () => clearInterval(idleTimer) });
+
+  /** Collect the agent's reply and tool calls for the transcript while a turn runs. */
+  const recordTurn = (sessionId: string, prompt: string) => {
+    const turn: StoredTurn = { prompt, response: '', tools: [], at: Date.now() };
+    // Latest title per tool call: agents often rename a call once its input is known
+    const tools = new Map<string, string>();
+    const listener = (n: SessionNotification) => {
+      if (n.sessionId !== sessionId) { return; }
+      const u = n.update;
+      if (u.sessionUpdate === 'agent_message_chunk' && u.content.type === 'text') {
+        turn.response += u.content.text;
+      } else if ((u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update') && u.title) {
+        tools.set(u.toolCallId, u.title);
+      }
+    };
+    sessionUpdateHandler.addListener(listener);
+    return {
+      turn,
+      stop: () => {
+        sessionUpdateHandler.removeListener(listener);
+        turn.tools = [...tools.values()];
+      },
+    };
+  };
+
+  // Bind the chat to its agent session, apply the toolbar selections, then
+  // hand over to the regular ACP handler and save the turn
   const sessionHandler: vscode.ChatRequestHandler = async (request, ctx, stream, token) => {
+    await store.load();
     const state = ctx.chatSessionContext?.inputState;
+    const resource = ctx.chatSessionContext?.chatSessionItem?.resource;
+    const chat = store.ensure(resource ? chatId(resource) : randomUUID(), request.prompt || 'ACP chat');
     // Normalize against the current config (e.g. the selected agent was removed meanwhile)
     const selected = selectionsOf(buildGroups(selectionsOf(state?.groups)));
+    const agentName = selected[GROUP.agent];
+    if (!agentName) {
+      stream.markdown('No ACP agent is configured. Add one with **ACP: Add Agent Configuration**.');
+      return {};
+    }
+
+    let session: SessionInfo;
     try {
-      const session = await ensureAgent(selected[GROUP.agent]);
-      if (session) {
-        await applySelections(session, selected);
-        router.setAutoApproveNextTurn(session.sessionId, selected[GROUP.permissions] === 'auto');
-      }
+      session = await sessionForChat(chat, agentName);
+      await applySelections(session, selected);
+      router.setAutoApproveNextTurn(session.sessionId, selected[GROUP.permissions] === 'auto');
       if (state) { refresh(state); }
     } catch (e: any) {
       logError('ACP session: setup failed', e);
-      stream.markdown(`**Could not start ${selected[GROUP.agent] ?? 'the agent'}:** ${e?.message ?? e}`);
+      stream.markdown(`**Could not start ${agentName}:** ${e?.message ?? e}`);
       return {};
     }
-    return handler(request, ctx, stream, token);
+
+    const recording = recordTurn(session.sessionId, request.prompt);
+    try {
+      // Explicit session: another chat may switch the active one meanwhile
+      return await runTurn(session.sessionId, request, stream, token);
+    } finally {
+      recording.stop();
+      Object.assign(chat, {
+        agentName,
+        acpSessionId: session.sessionId,
+        selections: Object.fromEntries(Object.entries(selectionsOf(state?.groups)).filter(([, v]) => v)) as Record<string, string>,
+      });
+      chat.turns.push(recording.turn);
+      await store.save(chat).catch(e => logError('ACP session: saving chat failed', e));
+      controller.items.add(toItem(chat));
+    }
+  };
+
+  /** Rebuild the chat history shown when a saved chat is opened. */
+  const historyOf = (chat: StoredChat | undefined): Array<vscode.ChatRequestTurn | vscode.ChatResponseTurn2> => {
+    const turns: Array<vscode.ChatRequestTurn | vscode.ChatResponseTurn2> = [];
+    for (const t of chat?.turns ?? []) {
+      turns.push(new vscode.ChatRequestTurn2(t.prompt, undefined, [], ACP_SESSION_TYPE, [], undefined, undefined, undefined, undefined));
+      const parts: vscode.ChatResponseMarkdownPart[] = [];
+      if (t.tools.length) {
+        parts.push(new vscode.ChatResponseMarkdownPart(`_${t.tools.map(x => x.replace(/[_*`]/g, '')).join(' · ')}_\n\n`));
+      }
+      parts.push(new vscode.ChatResponseMarkdownPart(t.response || '_(no reply)_'));
+      turns.push(new vscode.ChatResponseTurn2(parts, {}, ACP_SESSION_TYPE));
+    }
+    return turns;
   };
 
   const participant = vscode.chat.createChatParticipant(ACP_SESSION_TYPE, sessionHandler);
@@ -258,7 +415,15 @@ export function registerAcpChatSessions(
     controller,
     participant,
     vscode.chat.registerChatSessionContentProvider(ACP_SESSION_TYPE, {
-      provideChatSessionContent: () => ({ history: [], requestHandler: sessionHandler }),
+      provideChatSessionContent: async resource => {
+        await store.load();
+        const chat = store.get(chatId(resource));
+        // Saved picker values; VS Code only shows pickers that have a value for existing sessions
+        const options = Object.fromEntries(
+          buildGroups(chat?.selections ?? {}).filter(g => g.selected).map(g => [g.id, g.selected!.id]),
+        );
+        return { title: chat?.label, history: historyOf(chat), options, requestHandler: sessionHandler };
+      },
     }, participant),
   );
 
@@ -267,5 +432,5 @@ export function registerAcpChatSessions(
   const events = ['active-session-changed', 'config-options-changed', 'model-changed', 'mode-changed'];
   for (const event of events) { sessionManager.on(event, onOptionsChanged); }
   context.subscriptions.push({ dispose: () => events.forEach(e => sessionManager.off(e, onOptionsChanged)) });
-  return sessionHandler;
+  return { handler: sessionHandler, store, disconnectIdleAgents };
 }

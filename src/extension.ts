@@ -11,6 +11,7 @@ import { TurnRouter } from './chat/TurnRouter';
 import { PermissionTool, PERMISSION_TOOL } from './chat/PermissionTool';
 import { registerChatParticipant } from './chat/AcpChatParticipant';
 import { registerAcpChatSessions } from './chat/AcpChatSessions';
+import type { StoredChat } from './chat/AcpChatStore';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
@@ -29,6 +30,12 @@ export interface AcpExtensionApi {
   acpSessionHandler: vscode.ChatRequestHandler;
   /** Config options of the active ACP session. */
   activeConfigOptions(): unknown[] | null;
+  /** Saved ACP chats. */
+  acpChats(): StoredChat[];
+  /** Names of the agents currently connected. */
+  connectedAgents(): string[];
+  /** Disconnect ACP chat agents idle for `maxIdleMs` (what the idle timer does). */
+  disconnectIdleAgents(maxIdleMs: number): Promise<string[]>;
 }
 
 export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
@@ -86,7 +93,7 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
 
   const chatParticipant = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker);
   // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input
-  const acpSessionHandler = registerAcpChatSessions(context, sessionManager, turnRouter, chatParticipant.handler);
+  const acpSessions = registerAcpChatSessions(context, sessionManager, sessionUpdateHandler, turnRouter, chatParticipant.runTurn);
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
@@ -592,7 +599,10 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     changeTracker,
     chatHandler: chatParticipant.handler,
     chatRequestCount: chatParticipant.requestCount,
-    acpSessionHandler,
+    acpSessionHandler: acpSessions.handler,
+    acpChats: () => acpSessions.store.list(),
+    connectedAgents: () => sessionManager.getConnectedAgentNames(),
+    disconnectIdleAgents: ms => acpSessions.disconnectIdleAgents(ms),
     activeConfigOptions: () => sessionManager.getActiveSession()?.configOptions ?? null,
   };
 }

@@ -19,7 +19,7 @@ import { AgentManager } from './AgentManager';
 import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
-import { getAgentConfigs } from '../config/AgentConfig';
+import { getAgentConfigs, AgentConfigEntry } from '../config/AgentConfig';
 import { log, logError } from '../utils/Logger';
 import { sendEvent, sendError } from '../utils/TelemetryManager';
 
@@ -58,6 +58,11 @@ export interface AgentCapabilitySummary {
 /**
  * Why an agent expansion failed (used to surface a useful tree placeholder).
  */
+export interface ConnectOptions {
+  /** Disconnect other agents first (single-agent sidebar model). Defaults to true. */
+  exclusive?: boolean;
+}
+
 export type AgentConnectionError =
   | { kind: 'auth-cancelled' }
   | { kind: 'connect-failed'; message: string };
@@ -91,6 +96,11 @@ export class SessionManager extends EventEmitter {
    * without paying the connect cost on every render.
    */
   private capabilities: Map<string, AgentCapabilitySummary> = new Map();
+
+  /** Prompts in flight per agent. */
+  private busy: Map<string, number> = new Map();
+  /** Last connect / prompt time per agent (ms epoch), for idle disconnects. */
+  private lastActivity: Map<string, number> = new Map();
 
   /** Set of session IDs that are currently being replayed via `session/load`. */
   private loadingSessionIds: Set<string> = new Set();
@@ -141,11 +151,12 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Connect to an agent and start chatting.
-   * Only one agent can be connected at a time — automatically disconnects
-   * any previously connected agent.
+   * By default only one agent is connected at a time (the sidebar webview
+   * model) and any previously connected agent is disconnected; pass
+   * `exclusive: false` to keep other agents connected (ACP chat sessions).
    * Internally creates a session via ACP protocol.
    */
-  async connectToAgent(agentName: string): Promise<SessionInfo> {
+  async connectToAgent(agentName: string, { exclusive = true }: ConnectOptions = {}): Promise<SessionInfo> {
     // If we already have a live session with this agent, reuse it
     const existingSessionId = this.agentSessions.get(agentName);
     if (existingSessionId && this.sessions.has(existingSessionId)) {
@@ -156,7 +167,7 @@ export class SessionManager extends EventEmitter {
 
     // Disconnect any currently connected agent first (single-agent model)
     const currentAgent = this.getActiveAgentName();
-    if (currentAgent) {
+    if (exclusive && currentAgent) {
       await this.disconnectAgent(currentAgent);
     }
 
@@ -173,49 +184,9 @@ export class SessionManager extends EventEmitter {
     try {
       const workspaceCwd = this.getWorkspaceCwd();
 
-      // Spawn the agent process in workspace cwd
-      const agentInstance = this.agentManager.spawnAgent(agentName, config, workspaceCwd);
-      const agentId = agentInstance.id;
-
-      // Listen for agent errors/close
-      this.agentManager.on('agent-error', (evt: { agentId: string; error: Error }) => {
-        if (evt.agentId === agentId) {
-          logError(`Agent ${agentName} error`, evt.error);
-          this.emit('agent-error', agentId, evt.error);
-        }
-      });
-
-      this.agentManager.on('agent-closed', (evt: { agentId: string; code: number | null }) => {
-        if (evt.agentId === agentId) {
-          log(`Agent ${agentName} closed with code ${evt.code}`);
-          // Clean up the session for this agent
-          const sessionId = this.agentSessions.get(agentName);
-          if (sessionId) {
-            this.sessions.delete(sessionId);
-            this.agentSessions.delete(agentName);
-            if (this.activeSessionId === sessionId) {
-              this.activeSessionId = null;
-            }
-            this.emit('agent-disconnected', agentName);
-            this.emit('active-session-changed', null);
-          }
-          this.emit('agent-closed', agentId, evt.code);
-        }
-      });
-
-      // Connect and initialize
-      const agentProcess = this.agentManager.getAgent(agentId);
-      if (!agentProcess) {
-        throw new Error('Agent process not found after spawn');
-      }
-
-      let connInfo: ConnectionInfo;
-      try {
-        connInfo = await this.connectionManager.connect(agentId, agentProcess.process);
-      } catch (e) {
-        this.agentManager.killAgent(agentId);
-        throw e;
-      }
+      // Reuse a process spawned earlier without a session (e.g. a capability probe)
+      const { agentId, connInfo } = this.findRunningConnection(agentName)
+        ?? await this.spawnConnection(agentName, config, workspaceCwd);
 
       // Create ACP session (with auth handling). The session is already
       // registered in `this.sessions` by createAcpSession so that any
@@ -235,6 +206,91 @@ export class SessionManager extends EventEmitter {
       sendError('agent/connect.end', { agentName, result: 'error', errorMessage: e.message || String(e) }, { duration: Date.now() - connectStartTime });
       throw e;
     }
+  }
+
+  /** Spawn an agent process, watch its lifetime and initialize the ACP connection. */
+  private async spawnConnection(
+    agentName: string,
+    config: AgentConfigEntry,
+    cwd: string,
+  ): Promise<{ agentId: string; connInfo: ConnectionInfo }> {
+    const agentInstance = this.agentManager.spawnAgent(agentName, config, cwd);
+    const agentId = agentInstance.id;
+
+    // Listen for agent errors/close
+    this.agentManager.on('agent-error', (evt: { agentId: string; error: Error }) => {
+      if (evt.agentId === agentId) {
+        logError(`Agent ${agentName} error`, evt.error);
+        this.emit('agent-error', agentId, evt.error);
+      }
+    });
+
+    this.agentManager.on('agent-closed', (evt: { agentId: string; code: number | null }) => {
+      if (evt.agentId === agentId) {
+        log(`Agent ${agentName} closed with code ${evt.code}`);
+        // Clean up the sessions of this agent process
+        if ([...this.sessions.values()].some(s => s.agentId === agentId)) {
+          this.forgetAgentProcess(agentName, agentId);
+        }
+        this.emit('agent-closed', agentId, evt.code);
+      }
+    });
+
+    const agentProcess = this.agentManager.getAgent(agentId);
+    if (!agentProcess) {
+      throw new Error('Agent process not found after spawn');
+    }
+    try {
+      const connInfo = await this.connectionManager.connect(agentId, agentProcess.process);
+      this.capabilities.set(agentName, this.summarizeCapabilities(connInfo.initResponse.agentCapabilities));
+      this.markActivity(agentName);
+      return { agentId, connInfo };
+    } catch (e) {
+      this.agentManager.killAgent(agentId);
+      throw e;
+    }
+  }
+
+  /** A running, initialized process of the agent, if any. */
+  private findRunningConnection(agentName: string): { agentId: string; connInfo: ConnectionInfo } | undefined {
+    for (const instance of this.agentManager.getRunningAgents()) {
+      const connInfo = instance.name === agentName ? this.connectionManager.getConnection(instance.id) : undefined;
+      if (connInfo) { return { agentId: instance.id, connInfo }; }
+    }
+    return undefined;
+  }
+
+  /**
+   * Start an additional ACP session with an agent on its existing connection
+   * (connecting first when needed) and make it the active session. Earlier
+   * sessions on the same connection stay usable, so several chats can each
+   * keep their own agent conversation.
+   */
+  async startNewSession(agentName: string): Promise<SessionInfo> {
+    if (!this.agentSessions.has(agentName) && !this.findRunningConnection(agentName)) {
+      return this.connectToAgent(agentName, { exclusive: false });
+    }
+    const conn = await this.ensureConnected(agentName);
+    const agentId = this.findAgentIdForConnection(conn);
+    if (!agentId) {
+      throw new Error(`Unable to locate agent process for "${agentName}".`);
+    }
+    const sessionInfo = await this.createAcpSession(agentName, agentId, conn, this.getWorkspaceCwd());
+    this.activateSession(sessionInfo.sessionId);
+    log(`Started new session ${sessionInfo.sessionId} with ${agentName}`);
+    return sessionInfo;
+  }
+
+  /** Make a known session the active one (for its agent and globally). */
+  activateSession(sessionId: string): SessionInfo | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session) { return undefined; }
+    this.agentSessions.set(session.agentName, sessionId);
+    if (this.activeSessionId !== sessionId) {
+      this.activeSessionId = sessionId;
+      this.emit('active-session-changed', sessionId);
+    }
+    return session;
   }
 
   /**
@@ -268,15 +324,21 @@ export class SessionManager extends EventEmitter {
 
     this.agentManager.killAgent(session.agentId);
     this.connectionManager.removeConnection(session.agentId);
-    this.sessions.delete(sessionId);
-    this.agentSessions.delete(agentName);
+    this.forgetAgentProcess(agentName, session.agentId);
+  }
 
-    if (this.activeSessionId === sessionId) {
-      this.activeSessionId = null;
+  /** Drop every session of an agent process that is gone. */
+  private forgetAgentProcess(agentName: string, agentId: string): void {
+    const wasActive = this.getActiveSession()?.agentId === agentId;
+    if (this.getAgentSession(agentName)?.agentId === agentId) { this.agentSessions.delete(agentName); }
+    for (const [id, s] of this.sessions) {
+      if (s.agentId === agentId) { this.sessions.delete(id); }
     }
+    this.busy.delete(agentName);
+    if (wasActive) { this.activeSessionId = null; }
 
     this.emit('agent-disconnected', agentName);
-    this.emit('active-session-changed', null);
+    if (wasActive) { this.emit('active-session-changed', null); }
   }
 
   /**
@@ -455,10 +517,18 @@ export class SessionManager extends EventEmitter {
       { type: 'text', text },
     ];
 
-    const response = await connInfo.connection.prompt({
-      sessionId,
-      prompt,
-    });
+    const agentName = session.agentName;
+    this.busy.set(agentName, (this.busy.get(agentName) ?? 0) + 1);
+    let response: PromptResponse;
+    try {
+      response = await connInfo.connection.prompt({
+        sessionId,
+        prompt,
+      });
+    } finally {
+      this.busy.set(agentName, (this.busy.get(agentName) ?? 1) - 1);
+      this.markActivity(agentName);
+    }
 
     log(`Prompt response: stopReason=${response.stopReason}`);
     return response;
@@ -682,23 +752,7 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Unknown agent: ${agentName}.`);
     }
 
-    const workspaceCwd = this.getWorkspaceCwd();
-    const agentInstance = this.agentManager.spawnAgent(agentName, config, workspaceCwd);
-    const agentId = agentInstance.id;
-
-    const agentProcess = this.agentManager.getAgent(agentId);
-    if (!agentProcess) {
-      throw new Error('Agent process not found after spawn');
-    }
-
-    let connInfo: ConnectionInfo;
-    try {
-      connInfo = await this.connectionManager.connect(agentId, agentProcess.process);
-    } catch (e) {
-      this.agentManager.killAgent(agentId);
-      throw e;
-    }
-
+    const { connInfo } = await this.spawnConnection(agentName, config, this.getWorkspaceCwd());
     this.capabilities.set(agentName, this.summarizeCapabilities(connInfo.initResponse.agentCapabilities));
     return connInfo;
   }
@@ -753,11 +807,11 @@ export class SessionManager extends EventEmitter {
    * `session/update` notifications. Heavyweight. Active session is switched
    * to the loaded session on success.
    */
-  async loadSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+  async loadSession(agentName: string, sessionId: string, { exclusive = true }: ConnectOptions = {}): Promise<SessionInfo> {
     // Honor the single-active-session model: if a different agent currently
     // owns the active session, disconnect it before opening this one.
     const currentAgent = this.getActiveAgentName();
-    if (currentAgent && currentAgent !== agentName) {
+    if (exclusive && currentAgent && currentAgent !== agentName) {
       await this.disconnectAgent(currentAgent);
     }
 
@@ -768,9 +822,10 @@ export class SessionManager extends EventEmitter {
     }
 
     // If the same agent has a different active session, clear it so the
-    // load can take over as the new active session.
+    // load can take over as the new active session. Non-exclusive callers
+    // keep it: it belongs to another chat.
     const previouslyActive = this.activeSessionId;
-    if (previouslyActive && previouslyActive !== sessionId) {
+    if (exclusive && previouslyActive && previouslyActive !== sessionId) {
       const prevSession = this.sessions.get(previouslyActive);
       if (prevSession) {
         this.agentSessions.delete(prevSession.agentName);
@@ -856,9 +911,9 @@ export class SessionManager extends EventEmitter {
   /**
    * Resume an existing session without replaying history (light path).
    */
-  async resumeSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+  async resumeSession(agentName: string, sessionId: string, { exclusive = true }: ConnectOptions = {}): Promise<SessionInfo> {
     const currentAgent = this.getActiveAgentName();
-    if (currentAgent && currentAgent !== agentName) {
+    if (exclusive && currentAgent && currentAgent !== agentName) {
       await this.disconnectAgent(currentAgent);
     }
 
@@ -868,9 +923,10 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Agent "${agentName}" does not support session/resume.`);
     }
 
-    // If the same agent has a different active session, clear it.
+    // If the same agent has a different active session, clear it (unless
+    // non-exclusive: it belongs to another chat).
     const previouslyActive = this.activeSessionId;
-    if (previouslyActive && previouslyActive !== sessionId) {
+    if (exclusive && previouslyActive && previouslyActive !== sessionId) {
       const prevSession = this.sessions.get(previouslyActive);
       if (prevSession) {
         this.agentSessions.delete(prevSession.agentName);
@@ -966,6 +1022,23 @@ export class SessionManager extends EventEmitter {
   getActiveAgentName(): string | null {
     const session = this.getActiveSession();
     return session?.agentName ?? null;
+  }
+
+  private markActivity(agentName: string): void {
+    this.lastActivity.set(agentName, Date.now());
+  }
+
+  /** Connected agents with no prompt in flight and no activity for `maxIdleMs`. */
+  getIdleAgentNames(maxIdleMs: number): string[] {
+    const now = Date.now();
+    return this.getConnectedAgentNames().filter(name =>
+      !this.busy.get(name) && now - (this.lastActivity.get(name) ?? 0) >= maxIdleMs);
+  }
+
+  /** The agent's current session (the latest one used), if it is connected. */
+  getAgentSession(agentName: string): SessionInfo | undefined {
+    const id = this.agentSessions.get(agentName);
+    return id ? this.sessions.get(id) : undefined;
   }
 
   /** Check if a specific agent is currently connected. */

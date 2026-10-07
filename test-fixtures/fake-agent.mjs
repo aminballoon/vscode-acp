@@ -14,7 +14,13 @@ const delay = ms => new Promise(r => setTimeout(r, ms));
 class FakeAgent {
   constructor(conn) { this.conn = conn; this.cwds = new Map(); }
   async initialize() {
-    return { protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
+    return { protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: false, sessionCapabilities: { resume: {} } } };
+  }
+  // Any session id resumes (a real agent reads its saved history from disk)
+  async resumeSession(params) {
+    this.cwds.set(params.sessionId, params.cwd || process.cwd());
+    this.config ??= { model: 'fake-smart', effort: 'medium' };
+    return { configOptions: this.configOptions() };
   }
   async newSession(params) {
     const sessionId = 'fake-' + Date.now();

@@ -42,7 +42,17 @@ interface TurnState {
   thoughtN: number;
 }
 
+/** Run a chat request against a given ACP session. */
+export type ChatTurnRunner = (
+  sessionId: string | null,
+  request: vscode.ChatRequest,
+  stream: vscode.ChatResponseStream,
+  token: vscode.CancellationToken,
+) => Promise<vscode.ChatResult>;
+
 export interface ChatParticipantHandle {
+  /** Run a request against a specific session (ACP chat sessions bind one per chat). */
+  runTurn: ChatTurnRunner;
   handler: vscode.ChatRequestHandler;
   /** Number of chat requests handled; read by UI tests. */
   requestCount(): number;
@@ -66,8 +76,10 @@ export function registerChatParticipant(
 ): ChatParticipantHandle {
   let requestCount = 0;
 
-  const handler: vscode.ChatRequestHandler = async (request, _ctx, stream, token) => {
-    const sessionId = sessionManager.getActiveSessionId();
+  const handler: vscode.ChatRequestHandler = (request, _ctx, stream, token) =>
+    runTurn(sessionManager.getActiveSessionId(), request, stream, token);
+
+  const runTurn: ChatTurnRunner = async (sessionId, request, stream, token) => {
     if (!sessionId) {
       stream.markdown('No ACP agent is connected.\n\n');
       stream.button({ title: 'Connect to Agent', command: 'acp.connectAgent' });
@@ -128,7 +140,7 @@ export function registerChatParticipant(
       router.answerPermission(permId, optionId);
     }),
   );
-  return { handler, requestCount: () => requestCount };
+  return { handler, runTurn, requestCount: () => requestCount };
 }
 
 function renderUpdate(u: SessionUpdate, st: TurnState, router: TurnRouter, tracker: ChangeTracker): void {

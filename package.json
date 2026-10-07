@@ -512,6 +512,12 @@
           "default": true,
           "markdownDescription": "Send agent file edits to VS Code's native chat edit UI (`textEdit` / `externalEdit`, proposed API). Agent host sessions (e.g. Copilot CLI) reject these calls; there the extension falls back to snapshotting files and showing a diff with Keep/Undo in the response."
         },
+        "acp.chat.idleDisconnectMinutes": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "markdownDescription": "Disconnect an agent used by ACP chats after this many idle minutes to free memory (`0` = never). Only agents that can restore sessions (`session/resume` or `session/load`) are disconnected; the next message reconnects and the chat keeps its context."
+        },
         "acp.autoApprovePermissions": {
           "type": "string",
           "enum": [
