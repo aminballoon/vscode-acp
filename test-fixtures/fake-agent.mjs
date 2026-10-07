@@ -56,6 +56,15 @@ class FakeAgent {
     const oldText = fs.readFileSync(path, 'utf8');
     const newText = oldText.includes('sleep(2)') ? oldText.replace('sleep(2)', 'sleep(10)') : oldText + '# edited\n';
 
+    // Like an agent running `sed -i` in its terminal tool: no paths, no diff
+    if (text.startsWith('shell-edit')) {
+      await send({ sessionUpdate: 'tool_call', toolCallId: 's1', title: `sed -i '' 's/sleep(2)/sleep(10)/' ${name}`, kind: 'execute', status: 'in_progress' });
+      fs.writeFileSync(path, newText);
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 's1', status: 'completed' });
+      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Edited with sed.' } });
+      return { stopReason: 'end_turn' };
+    }
+
     await send({ sessionUpdate: 'tool_call', toolCallId: 'e1', title: 'Preparing file…', kind: 'edit', status: 'pending', content: [], locations: [] });
     await send({ sessionUpdate: 'tool_call', toolCallId: 'g1', title: 'Grep sleep', kind: 'search', status: 'pending' });
     await send({ sessionUpdate: 'tool_call_update', toolCallId: 'e1', title: 'Edit hello.py', locations: [{ path }],

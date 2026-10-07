@@ -1,6 +1,6 @@
 {
-  "name": "acp-agents",
-  "displayName": "ACP Agents",
+  "name": "acp-chat",
+  "displayName": "ACP Chat",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
   "version": "0.2.0",
   "publisher": "aminballoon",
@@ -12,13 +12,12 @@
   "license": "MIT",
   "icon": "resources/icon.png",
   "bugs": {
-    "url": "https://github.com/formulahendry/vscode-acp/issues",
-    "email": "formulahendry@gmail.com"
+    "url": "https://github.com/aminballoon/acp-chat/issues"
   },
-  "homepage": "https://github.com/formulahendry/vscode-acp/blob/main/README.md",
+  "homepage": "https://github.com/aminballoon/acp-chat#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/formulahendry/vscode-acp.git"
+    "url": "https://github.com/aminballoon/acp-chat.git"
   },
   "engines": {
     "vscode": "^1.140.0"
@@ -41,7 +40,7 @@
       {
         "name": "acp_permission",
         "displayName": "ACP Agent Action",
-        "modelDescription": "Internal to the ACP Agents extension: shows a confirmation for an action requested by a connected ACP agent. Do not call this tool.",
+        "modelDescription": "Internal to the ACP Chat extension: shows a confirmation for an action requested by a connected ACP agent. Do not call this tool.",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -59,7 +58,7 @@
         "name": "acp",
         "displayName": "ACP",
         "icon": "$(hubot)",
-        "welcomeTitle": "ACP Agents",
+        "welcomeTitle": "ACP Chat",
         "welcomeMessage": "Chat with Claude Code, Codex, Antigravity and other ACP agents",
         "inputPlaceholder": "Ask the selected ACP agent, type `#` for adding context",
         "order": 3,

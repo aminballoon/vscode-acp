@@ -16,7 +16,7 @@ export default defineConfig([
 		useInstallation: { fromPath: '/Applications/Visual Studio Code.app/Contents/MacOS/Code' },
 		workspaceFolder: './test-fixtures/ws',
 		launchArgs: [
-			'--enable-proposed-api=aminballoon.acp-agents',
+			'--enable-proposed-api=aminballoon.acp-chat',
 			'--disable-extension=formulahendry.acp-client',
 		],
 		env: { ACP_E2E_NODE: node },
@@ -30,7 +30,7 @@ export default defineConfig([
 		useInstallation: { fromPath: '/Applications/Visual Studio Code.app/Contents/MacOS/Code' },
 		workspaceFolder: './test-fixtures/ws',
 		launchArgs: [
-			'--enable-proposed-api=aminballoon.acp-agents',
+			'--enable-proposed-api=aminballoon.acp-chat',
 			'--disable-extension=formulahendry.acp-client',
 		],
 		env: { ACP_E2E_NODE: node, ACP_UI_SIGNAL_DIR: process.env.ACP_UI_SIGNAL_DIR ?? '', ACP_UI_NATIVE: process.env.ACP_UI_NATIVE ?? '1' },

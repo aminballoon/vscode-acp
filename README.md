@@ -1,4 +1,4 @@
-# ACP Agents for VS Code
+# ACP Chat for VS Code
 
 Chat with any [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) coding agent — Claude Code, Codex, Antigravity, Qwen Code and more — **inside VS Code's native Chat view**, with the same edit-review experience as GitHub Copilot: native tool confirmations, a "files changed" bar, inline diffs and Keep / Undo.
 
@@ -63,16 +63,16 @@ npm run setup
 ```
 
 `npm run setup` does four things:
-1. Builds `acp-agents-<version>.vsix`.
+1. Builds `acp-chat-<version>.vsix`.
 2. Uninstalls the original **ACP Client** (`formulahendry.acp-client`) if present, because both register the same commands.
 3. Installs the `.vsix` with `code --install-extension`.
-4. Adds `"enable-proposed-api": ["aminballoon.acp-agents"]` to `~/.vscode/argv.json`, keeping comments and other settings. A backup is saved as `argv.json.bak`.
+4. Adds `"enable-proposed-api": ["aminballoon.acp-chat"]` to `~/.vscode/argv.json`, keeping comments and other settings. A backup is saved as `argv.json.bak`.
 
 Then **quit VS Code completely** (`Cmd+Q` / File → Exit) and open it again. `argv.json` is only read at startup.
 
 | Option | Use |
 |--------|-----|
-| `npm run setup -- --vsix path/to/acp-agents.vsix` | Install a prebuilt `.vsix`, for example from GitHub Releases, without building |
+| `npm run setup -- --vsix path/to/acp-chat.vsix` | Install a prebuilt `.vsix`, for example from GitHub Releases, without building |
 | `npm run setup -- --insiders` | Target VS Code Insiders (`code-insiders`, `~/.vscode-insiders/argv.json`) |
 | `npm run setup -- --uninstall` | Remove the extension and its `argv.json` entry |
 
@@ -86,13 +86,13 @@ Recommended: set `"update.mode": "manual"` in VS Code settings, so an automatic 
 ```bash
 npm install
 npx vsce package --no-dependencies
-code --install-extension acp-agents-*.vsix
+code --install-extension acp-chat-*.vsix
 ```
 
 Then run **Preferences: Configure Runtime Arguments**, add the following to `argv.json`, and restart VS Code:
 
 ```jsonc
-"enable-proposed-api": ["aminballoon.acp-agents"]
+"enable-proposed-api": ["aminballoon.acp-chat"]
 ```
 
 </details>
@@ -183,7 +183,7 @@ Tests:
 
 | Command | What it runs |
 |---------|--------------|
-| `npm test` | Unit smoke test |
+| `npm test` | Unit smoke tests, including that Undo preserves user edits unless forced. |
 | `npm run test:e2e` | Calls the `@acp` handler directly against a fake ACP agent (`test-fixtures/fake-agent.mjs`). Covers approve, reject, keep and undo. |
 | `npm run test:ui` | macOS only. Drives the real Chat view in the installed VS Code and saves screenshots of the test window to `.vscode-test/screenshots/`. Needs Screen Recording permission for your terminal. |
 
@@ -205,4 +205,4 @@ The fake agent copies the message order Claude Code uses for edits:
 
 ## Credits & License
 
-Based on [ACP Client](https://github.com/formulahendry/vscode-acp) by Jun Han. MIT — see [LICENSE](LICENSE).
+Originally forked from [ACP Client](https://github.com/formulahendry/vscode-acp) by Jun Han and substantially extended (native chat participant, edit review, persistent per-chat sessions). MIT — see [LICENSE](LICENSE). Bundled third-party packages and their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -6,7 +6,7 @@ import type { AcpExtensionApi } from '../extension';
 
 /** Shared setup for the e2e and UI suites (fake ACP agent + fixture workspace). */
 
-export const EXT_ID = 'aminballoon.acp-agents';
+export const EXT_ID = 'aminballoon.acp-chat';
 /** Content of test-fixtures/ws/hello.py; the fake agent changes sleep(2) to sleep(10). */
 export const ORIGINAL = 'import time\n\n\ndef main():\n    time.sleep(2)\n    print("hi")\n';
 

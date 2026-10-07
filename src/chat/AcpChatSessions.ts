@@ -77,6 +77,14 @@ function selectItems(option: SessionConfigOption): Item[] {
   return flat.map(o => toItem(o.value, o.name, o.description));
 }
 
+/** Whether two group lists show the same items and selections. */
+function sameGroups(a: readonly Group[], b: readonly Group[] | undefined): boolean {
+  const key = (groups: readonly Group[] | undefined) => JSON.stringify((groups ?? []).map(g => [
+    g.id, g.selected?.id, g.items.map(i => [i.id, i.name, i.description, (i.icon as vscode.ThemeIcon | undefined)?.id]),
+  ]));
+  return key(a) === key(b);
+}
+
 function pick(items: Item[], ...ids: Array<string | undefined>): Item | undefined {
   for (const id of ids) {
     const found = id !== undefined ? items.find(i => i.id === id) : undefined;
@@ -150,8 +158,13 @@ export function registerAcpChatSessions(
     controller.items.replace(store.list().filter(c => c.turns.length).map(toItem));
   });
   const liveStates = new Set<vscode.ChatSessionInputState>();
-  /** Agent each input state showed after our last update; a different value means the user picked it. */
-  const shownAgent = new WeakMap<vscode.ChatSessionInputState, string | undefined>();
+  /**
+   * Selections each input state showed after our last update. Only values that
+   * differ from these were picked by the user: our own updates echo back as
+   * change events, and re-applying them makes chats with different picks
+   * overwrite each other's agent options in a loop.
+   */
+  const shown = new WeakMap<vscode.ChatSessionInputState, Selections>();
 
   const buildGroups = (previous: Selections): Group[] => {
     const agentItems: Item[] = getAgentNames().map(name => ({ id: name, name, icon: agentLogo(name) }));
@@ -183,9 +196,10 @@ export function registerAcpChatSessions(
     return groups;
   };
 
-  const refresh = (state: vscode.ChatSessionInputState) => {
-    state.groups = buildGroups(selectionsOf(state.groups));
-    shownAgent.set(state, selectionsOf(state.groups)[GROUP.agent]);
+  const refresh = (state: vscode.ChatSessionInputState, selections = selectionsOf(state.groups)) => {
+    const groups = buildGroups(selections);
+    shown.set(state, selectionsOf(groups));
+    if (!sameGroups(groups, state.groups)) { state.groups = groups; }
   };
 
   /**
@@ -218,43 +232,86 @@ export function registerAcpChatSessions(
     }
   };
 
-  const watch = (state: vscode.ChatSessionInputState) => {
-    liveStates.add(state);
-    shownAgent.set(state, selectionsOf(state.groups)[GROUP.agent]);
-    state.onDidDispose(() => liveStates.delete(state));
-    state.onDidChange(async () => {
-      const selected = selectionsOf(state.groups);
-      try {
-        // Only a user pick connects an agent; our own refreshes (e.g. fallback after
-        // the agent was removed from settings) must not spawn one
-        if (selected[GROUP.agent] !== shownAgent.get(state)) {
-          shownAgent.set(state, selected[GROUP.agent]);
-          await ensureAgent(selected[GROUP.agent]);
-          refresh(state);
-          return;
-        }
-        const agentName = selected[GROUP.agent];
-        const session = agentName ? sessionManager.getAgentSession(agentName) : undefined;
-        if (session) {
-          await applySelections(session, selected);
-        }
-      } catch (e: any) {
-        logError('ACP session: applying picker change failed', e);
-        vscode.window.showErrorMessage(`ACP: ${e?.message ?? e}`);
-      }
-    });
+  /** The agent session a chat's picker changes apply to: the chat's own one, else the agent's current one. */
+  const sessionForPicks = (state: vscode.ChatSessionInputState, agentName: string): SessionInfo | undefined => {
+    const chat = state.sessionResource ? store.get(chatId(state.sessionResource)) : undefined;
+    const own = chat?.agentName === agentName && chat.acpSessionId ? sessionManager.getSession(chat.acpSessionId) : undefined;
+    return own ?? sessionManager.getAgentSession(agentName);
   };
 
+  /** A user picked new values in a chat's toolbar: show them, connect the agent or apply them to it. */
+  const onUserChange = async (state: vscode.ChatSessionInputState, selected: Selections) => {
+    const previous = shown.get(state) ?? {};
+    const changed = Object.keys({ ...previous, ...selected }).filter(k => selected[k] !== previous[k]);
+    if (!changed.length) { return; } // echo of our own update
+    refresh(state, selected);
+    try {
+      // Only a user pick connects an agent; our own refreshes (e.g. fallback after
+      // the agent was removed from settings) must not spawn one
+      if (changed.includes(GROUP.agent)) {
+        await ensureAgent(selected[GROUP.agent]);
+        refresh(state);
+        return;
+      }
+      const agentName = selected[GROUP.agent];
+      const session = agentName ? sessionForPicks(state, agentName) : undefined;
+      if (session) {
+        await applySelections(session, Object.fromEntries(changed.map(k => [k, selected[k]])));
+      }
+    } catch (e: any) {
+      logError('ACP session: applying picker change failed', e);
+      vscode.window.showErrorMessage(`ACP: ${e?.message ?? e}`);
+    }
+  };
+
+  const watch = (state: vscode.ChatSessionInputState) => {
+    liveStates.add(state);
+    shown.set(state, selectionsOf(state.groups));
+    state.onDidDispose(() => liveStates.delete(state));
+    // Only fires if VS Code broadcasts a change to every input state (when
+    // provideHandleOptionsChange is not used); see the content provider
+    state.onDidChange(() => onUserChange(state, selectionsOf(state.groups)));
+  };
+
+  /** The input state of the chat (or blank chat editor) a toolbar change came from. */
+  const stateForResource = (resource: vscode.Uri): vscode.ChatSessionInputState | undefined => {
+    const live = liveByChat.get(chatId(resource));
+    if (live) { return live; }
+    const key = resource.toString();
+    for (const state of liveStates) {
+      // Blank chat editors only have VS Code's internal untitled resource
+      const r = state.sessionResource ?? (state as { untitledSessionResource?: vscode.Uri }).untitledSessionResource;
+      if (r?.toString() === key) { return state; }
+    }
+    return undefined;
+  };
+
+  /** Input state shown for each open chat; its picks are what the toolbar displays. */
+  const liveByChat = new Map<string, vscode.ChatSessionInputState>();
+
+  // VS Code asks again when a request is sent (and VS Code then replaces the
+  // chat's earlier state), so an open chat keeps what its toolbar shows; the
+  // saved picks only seed a chat that is opened from the list
   controller.getChatSessionInputState = async (resource, { previousInputState }) => {
     await store.load();
-    const saved = resource ? store.get(chatId(resource))?.selections : undefined;
-    const state = controller.createChatSessionInputState(buildGroups(saved ?? selectionsOf(previousInputState?.groups)));
+    const id = resource ? chatId(resource) : undefined;
+    const live = id ? liveByChat.get(id) : undefined;
+    const saved = id ? store.get(id)?.selections : undefined;
+    const selections = live ? selectionsOf(live.groups)
+      : saved && Object.keys(saved).length ? saved : selectionsOf(previousInputState?.groups);
+    const state = controller.createChatSessionInputState(buildGroups(selections));
     watch(state);
+    if (id) {
+      liveByChat.set(id, state);
+      state.onDidDispose(() => { if (liveByChat.get(id) === state) { liveByChat.delete(id); } });
+    }
     return state;
   };
 
-  controller.newChatSessionItemHandler = async ({ request }) => {
+  controller.newChatSessionItemHandler = async ({ request, inputState }) => {
     const chat = store.ensure(randomUUID(), request.prompt || request.command || 'ACP chat');
+    // Keep the blank editor's picks when the chat gets its own resource
+    chat.selections = selectionsOf(inputState?.groups) as Record<string, string>;
     const item = toItem(chat);
     controller.items.add(item);
     return item;
@@ -415,20 +472,29 @@ export function registerAcpChatSessions(
     controller,
     participant,
     vscode.chat.registerChatSessionContentProvider(ACP_SESSION_TYPE, {
-      provideChatSessionContent: async resource => {
+      provideChatSessionContent: async (resource, _token, { inputState }) => {
         await store.load();
         const chat = store.get(chatId(resource));
-        // Saved picker values; VS Code only shows pickers that have a value for existing sessions
-        const options = Object.fromEntries(
-          buildGroups(chat?.selections ?? {}).filter(g => g.selected).map(g => [g.id, g.selected!.id]),
-        );
+        // VS Code only shows pickers that have a value for existing sessions
+        const options = selectionsOf(inputState?.groups ?? buildGroups(chat?.selections ?? {})) as Record<string, string>;
         return { title: chat?.label, history: historyOf(chat), options, requestHandler: sessionHandler };
+      },
+      // Tells us which chat a toolbar change came from; without it VS Code
+      // applies the change to the input state of every open ACP chat
+      provideHandleOptionsChange: (resource, updates) => {
+        const state = stateForResource(resource);
+        if (!state) { log(`ACP session: no input state for ${resource.toString()}`); return; }
+        const selected = { ...selectionsOf(state.groups) };
+        for (const u of updates) {
+          if (u.value === undefined) { delete selected[u.optionId]; } else { selected[u.optionId] = u.value; }
+        }
+        void onUserChange(state, selected);
       },
     }, participant),
   );
 
   // Keep pickers in sync when the agent's options change (e.g. a model change adjusts effort levels)
-  const onOptionsChanged = () => liveStates.forEach(refresh);
+  const onOptionsChanged = () => liveStates.forEach(state => refresh(state));
   const events = ['active-session-changed', 'config-options-changed', 'model-changed', 'mode-changed'];
   for (const event of events) { sessionManager.on(event, onOptionsChanged); }
   context.subscriptions.push({ dispose: () => events.forEach(e => sessionManager.off(e, onOptionsChanged)) });

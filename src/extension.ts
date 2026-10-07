@@ -593,7 +593,7 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     },
   );
 
-  sendEvent('extension/activated', { version: vscode.extensions.getExtension('aminballoon.acp-agents')?.packageJSON?.version ?? 'unknown' });
+  sendEvent('extension/activated', { version: vscode.extensions.getExtension('aminballoon.acp-chat')?.packageJSON?.version ?? 'unknown' });
   log('ACP Client extension activated.');
   return {
     changeTracker,

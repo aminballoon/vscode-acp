@@ -11,7 +11,7 @@
 			"request": "launch",
 			"args": [
 				"--extensionDevelopmentPath=${workspaceFolder}",
-				"--enable-proposed-api=aminballoon.acp-agents"
+				"--enable-proposed-api=aminballoon.acp-chat"
 			],
 			"outFiles": [
 				"${workspaceFolder}/dist/**/*.js"

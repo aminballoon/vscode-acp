@@ -97,6 +97,48 @@ suite('Chat participant e2e (fake agent)', function () {
     assert.strictEqual(api.changeTracker.size, 0);
   });
 
+  test('edit made by a shell command: diff card from the workspace snapshot', async () => {
+    const parts: Part[] = [];
+    await api.chatHandler(
+      { prompt: `shell-edit ${target}` } as unknown as vscode.ChatRequest,
+      { history: [] } as unknown as vscode.ChatContext,
+      recordingStream(parts), new vscode.CancellationTokenSource().token,
+    );
+    assert.ok(fs.readFileSync(target, 'utf8').includes('sleep(10)'), 'agent changed the file');
+    assert.ok(parts.some(p => p.kind === 'multiDiff'), 'diff card pushed');
+    assert.ok(parts.some(p => p.kind === 'button' && p.value?.command === 'acp.changes.undo'), 'Undo button pushed');
+    assert.ok(api.changeTracker.get(target)?.baseline?.includes('sleep(2)'), 'baseline is the pre-turn content');
+
+    await vscode.commands.executeCommand('acp.changes.undo', { path: target });
+    await waitFor(() => fs.readFileSync(target, 'utf8') === ORIGINAL, 10_000, 'undo to restore file');
+  });
+
+  test('edit made by a shell command: native external edit when the session supports it', async () => {
+    const parts: Part[] = [];
+    const seen: Array<{ before: string; after: string }> = [];
+    // What VS Code does for externalEdit: snapshot the files, run the callback, read them back
+    const stream = Object.assign(recordingStream(parts), {
+      textEdit: () => undefined,
+      workspaceEdit: () => undefined,
+      externalEdit: async (uris: vscode.Uri[], callback: () => Thenable<unknown>) => {
+        const before = fs.readFileSync(uris[0].fsPath, 'utf8');
+        await callback();
+        seen.push({ before, after: fs.readFileSync(uris[0].fsPath, 'utf8') });
+      },
+    });
+    await api.chatHandler(
+      { prompt: `shell-edit ${target}` } as unknown as vscode.ChatRequest,
+      { history: [] } as unknown as vscode.ChatContext,
+      stream, new vscode.CancellationTokenSource().token,
+    );
+    assert.strictEqual(seen.length, 1, 'replayed through externalEdit');
+    assert.strictEqual(seen[0].before, ORIGINAL, 'VS Code snapshots the pre-turn content');
+    assert.ok(seen[0].after.includes('sleep(10)'), 'and reads back the agent result');
+    assert.ok(fs.readFileSync(target, 'utf8').includes('sleep(10)'), 'agent result stays on disk');
+    assert.ok(!parts.some(p => p.kind === 'multiDiff'), 'no fallback card');
+    assert.strictEqual(api.changeTracker.size, 0, 'nothing pending in the fallback tracker');
+  });
+
   test('rejected edit: file untouched, no diff card, nothing pending', async () => {
     const parts = await runTurn(api, target, 'reject');
     assert.strictEqual(fs.readFileSync(target, 'utf8'), ORIGINAL);

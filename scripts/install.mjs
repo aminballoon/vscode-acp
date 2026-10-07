@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One-step installer for ACP Agents (macOS, Linux, Windows).
+// One-step installer for ACP Chat (macOS, Linux, Windows).
 //
 //   npm run setup                      build the .vsix, install it, enable proposed APIs
 //   npm run setup -- --vsix <file>     install a prebuilt .vsix (skips the build)
@@ -7,7 +7,7 @@
 //   npm run setup -- --uninstall       remove the extension and the argv.json entry
 //
 // What it does:
-//   1. Builds acp-agents-<version>.vsix (unless --vsix is given)
+//   1. Builds acp-chat-<version>.vsix (unless --vsix is given)
 //   2. Uninstalls the original ACP Client (formulahendry.acp-client) if present
 //   3. Installs the .vsix with the `code` CLI
 //   4. Adds the extension to "enable-proposed-api" in ~/.vscode/argv.json
@@ -80,7 +80,7 @@ export function updateArgv(text, add) {
     if (next.length) { return text.replace(re, `"enable-proposed-api": ${value}`); }
     // Last id removed: drop the whole entry. Prefer the exact block this
     // script inserts (comment + entry), so the file returns to its original text.
-    const ours = /\r?\n[ \t]*\/\/ Allow proposed APIs for the ACP Agents[^\n]*\r?\n[ \t]*"enable-proposed-api"\s*:\s*\[[^\]]*\],?\r?\n/;
+    const ours = /\r?\n[ \t]*\/\/ Allow proposed APIs for the ACP Chat[^\n]*\r?\n[ \t]*"enable-proposed-api"\s*:\s*\[[^\]]*\],?\r?\n/;
     if (ours.test(text)) { return text.replace(ours, ''); }
     return text.replace(/[ \t]*"enable-proposed-api"\s*:\s*\[[^\]]*\]\s*,?[ \t]*\r?\n?/, '');
   }
@@ -89,7 +89,7 @@ export function updateArgv(text, add) {
   const nl = text.includes('\r\n') ? '\r\n' : '\n';
   const rest = text.slice(brace + 1);
   const hasOtherKeys = /"[^"]+"\s*:/.test(rest.replace(/\/\/[^\n]*/g, ''));
-  const entry = `${nl}\t// Allow proposed APIs for the ACP Agents extension (VS Code chat participant).${nl}`
+  const entry = `${nl}\t// Allow proposed APIs for the ACP Chat extension (VS Code chat participant).${nl}`
     + `\t"enable-proposed-api": ${value}${hasOtherKeys ? ',' : ''}${nl}`;
   return text.slice(0, brace + 1) + entry + rest;
 }
@@ -132,7 +132,7 @@ function main() {
     return;
   }
   const uninstall = flag('--uninstall');
-  console.log(`ACP Agents installer — ${uninstall ? 'uninstall' : 'install'} ${EXT_ID}`);
+  console.log(`ACP Chat installer — ${uninstall ? 'uninstall' : 'install'} ${EXT_ID}`);
 
   step('Checking VS Code');
   const code = findCodeCli();

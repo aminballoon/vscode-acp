@@ -97,6 +97,11 @@ export class SessionManager extends EventEmitter {
    */
   private capabilities: Map<string, AgentCapabilitySummary> = new Map();
 
+  /** Connects in progress per agent. */
+  private connecting: Map<string, Promise<SessionInfo>> = new Map();
+  /** Spawns in progress per agent (ensureConnected). */
+  private spawning: Map<string, Promise<ConnectionInfo>> = new Map();
+
   /** Prompts in flight per agent. */
   private busy: Map<string, number> = new Map();
   /** Last connect / prompt time per agent (ms epoch), for idle disconnects. */
@@ -156,7 +161,20 @@ export class SessionManager extends EventEmitter {
    * `exclusive: false` to keep other agents connected (ACP chat sessions).
    * Internally creates a session via ACP protocol.
    */
-  async connectToAgent(agentName: string, { exclusive = true }: ConnectOptions = {}): Promise<SessionInfo> {
+  async connectToAgent(agentName: string, options: ConnectOptions = {}): Promise<SessionInfo> {
+    // Concurrent callers (e.g. several chat pickers) share one connect instead of spawning several processes
+    const pending = this.connecting.get(agentName);
+    if (pending) { return pending; }
+    const connect = this.connectToAgentOnce(agentName, options);
+    this.connecting.set(agentName, connect);
+    try {
+      return await connect;
+    } finally {
+      this.connecting.delete(agentName);
+    }
+  }
+
+  private async connectToAgentOnce(agentName: string, { exclusive = true }: ConnectOptions): Promise<SessionInfo> {
     // If we already have a live session with this agent, reuse it
     const existingSessionId = this.agentSessions.get(agentName);
     if (existingSessionId && this.sessions.has(existingSessionId)) {
@@ -184,9 +202,12 @@ export class SessionManager extends EventEmitter {
     try {
       const workspaceCwd = this.getWorkspaceCwd();
 
-      // Reuse a process spawned earlier without a session (e.g. a capability probe)
-      const { agentId, connInfo } = this.findRunningConnection(agentName)
-        ?? await this.spawnConnection(agentName, config, workspaceCwd);
+      // Reuses a process spawned earlier without a session (e.g. a capability probe)
+      const connInfo = await this.ensureConnected(agentName);
+      const agentId = this.findAgentIdForConnection(connInfo);
+      if (!agentId) {
+        throw new Error(`Unable to locate agent process for "${agentName}".`);
+      }
 
       // Create ACP session (with auth handling). The session is already
       // registered in `this.sessions` by createAcpSession so that any
@@ -752,9 +773,13 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Unknown agent: ${agentName}.`);
     }
 
-    const { connInfo } = await this.spawnConnection(agentName, config, this.getWorkspaceCwd());
-    this.capabilities.set(agentName, this.summarizeCapabilities(connInfo.initResponse.agentCapabilities));
-    return connInfo;
+    let spawn = this.spawning.get(agentName);
+    if (!spawn) {
+      spawn = this.spawnConnection(agentName, config, this.getWorkspaceCwd()).then(r => r.connInfo);
+      this.spawning.set(agentName, spawn);
+      void spawn.finally(() => this.spawning.delete(agentName)).catch(() => undefined);
+    }
+    return spawn;
   }
 
   /**

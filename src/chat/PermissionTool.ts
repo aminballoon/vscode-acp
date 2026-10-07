@@ -45,7 +45,7 @@ export class PermissionTool implements vscode.LanguageModelTool<PermissionInput>
 
   invoke(options: vscode.LanguageModelToolInvocationOptions<PermissionInput>): vscode.LanguageModelToolResult {
     if (!this.details.has(JSON.stringify(options.input))) {
-      throw new Error('This tool is internal to the ACP Agents extension.');
+      throw new Error('This tool is internal to the ACP Chat extension.');
     }
     return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart('approved')]);
   }

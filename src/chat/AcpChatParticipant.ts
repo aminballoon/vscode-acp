@@ -7,6 +7,7 @@ import type { TurnRouter, ActiveTurn } from './TurnRouter';
 import type { ChangeTracker } from '../changes/ChangeTracker';
 import { BaselineContentProvider } from '../changes/ChangesView';
 import { countLineChanges } from '../changes/diffUtil';
+import { TurnFileChange, WorkspaceSnapshot, WorkspaceSnapshots } from '../changes/WorkspaceSnapshot';
 import { hasNativeEdits, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
 import { log, logError } from '../utils/Logger';
 
@@ -38,6 +39,10 @@ interface TurnState {
   kinds: Map<string, ToolKind>;
   /** Files each edit tool call touches; snapshotted before and compared after. */
   editPaths: Map<string, Set<string>>;
+  /** Every file an edit tool call reported this turn (already shown, natively or as a card). */
+  reportedPaths: Set<string>;
+  /** Files saved in the editor during the turn. */
+  savedByUser: Set<string>;
   work: Promise<unknown>[];
   thoughtN: number;
 }
@@ -75,6 +80,7 @@ export function registerChatParticipant(
   tracker: ChangeTracker,
 ): ChatParticipantHandle {
   let requestCount = 0;
+  const snapshots = new WorkspaceSnapshots(context.globalStorageUri.fsPath);
 
   const handler: vscode.ChatRequestHandler = (request, _ctx, stream, token) =>
     runTurn(sessionManager.getActiveSessionId(), request, stream, token);
@@ -93,7 +99,7 @@ export function registerChatParticipant(
 
     const state: TurnState = {
       turn, sessionId,
-      externals: new Map(), externalResults: new Map(), kinds: new Map(), editPaths: new Map(), work: [], thoughtN: 0,
+      externals: new Map(), externalResults: new Map(), kinds: new Map(), editPaths: new Map(), reportedPaths: new Set(), savedByUser: new Set(), work: [], thoughtN: 0,
     };
 
     const listener = (n: SessionNotification) => {
@@ -110,6 +116,13 @@ export function registerChatParticipant(
       router.cancelPermissions(sessionId);
     });
 
+    // Edits made outside edit tool calls (shell commands, the agent's own patch
+    // tooling) are found by comparing the git working tree after the turn
+    const cwd = sessionManager.getSession(sessionId)?.cwd;
+    const snapshot = cwd ? await snapshots.take(cwd) : undefined;
+    // Files saved in the editor meanwhile were changed by the user, not the agent
+    const savedSub = vscode.workspace.onDidSaveTextDocument(d => state.savedByUser.add(d.uri.fsPath));
+
     try {
       sessionManager.recordFirstPrompt(sessionId, request.prompt);
       const res = await sessionManager.sendPrompt(sessionId, request.prompt);
@@ -124,6 +137,10 @@ export function registerChatParticipant(
       for (const id of [...state.editPaths.keys()]) { finishToolEdits(id, state, tracker); }
       // externalEdit must settle before the response completes
       await Promise.allSettled([...state.work, ...state.externalResults.values()]);
+      savedSub.dispose();
+      if (snapshot) {
+        await reportUntrackedEdits(snapshot, state, tracker).catch(e => logError('workspace diff failed', e));
+      }
       sessionUpdateHandler.removeListener(listener);
       cancelSub.dispose();
       router.end(sessionId);
@@ -226,6 +243,7 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
   const paths = st.editPaths.get(toolCallId);
   if (!paths?.size) { return; }
   st.editPaths.delete(toolCallId);
+  paths.forEach(p => st.reportedPaths.add(p));
   st.work.push((async () => {
     if (await st.externalResults.get(toolCallId)) {
       await Promise.all([...paths].map(p => tracker.keep(p)));
@@ -233,6 +251,69 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
       await reportEdits([...paths], st.turn.stream, tracker);
     }
   })().catch(e => logError('finishToolEdits failed', e)));
+}
+
+/** Show files the turn changed that no edit tool call reported. */
+async function reportUntrackedEdits(snapshot: WorkspaceSnapshot, st: TurnState, tracker: ChangeTracker): Promise<void> {
+  const { turn } = st;
+  const skip = (p: string) => st.reportedPaths.has(p) || turn.externalPaths.has(p) || turn.written.has(p) || st.savedByUser.has(p);
+  const changes = (await snapshot.changes())
+    .map(c => ({ ...c, path: vscode.Uri.file(c.path).fsPath }))
+    .filter(c => !skip(c.path));
+  if (!changes.length) { return; }
+  log(`workspace diff: ${changes.map(c => c.path).join(', ')}`);
+
+  // Native "files changed" (per-hunk Keep/Undo) where the chat session supports it
+  const native = turn.native && hasNativeEdits(turn.stream) ? await replayAsExternalEdit(changes, turn) : new Set<string>();
+  const rest = changes.filter(c => !native.has(c.path));
+  if (!rest.length) { return; }
+  await Promise.all(rest.map(c => tracker.noteTurnChange(c.path, c.before)));
+  await reportEdits(rest.map(c => c.path), turn.stream, tracker);
+}
+
+/**
+ * VS Code tracks an external edit by snapshotting files when it starts and
+ * reading them back when it ends. The agent already wrote these files, so put
+ * the pre-turn content back for a moment and redo the agent's write inside
+ * externalEdit. Deletions and files with unsaved editor changes are left to
+ * the diff card. Returns the paths that are now tracked natively.
+ */
+async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn): Promise<Set<string>> {
+  const eligible = changes.filter(c => c.after !== null && !findOpenDocument(c.path)?.isDirty);
+  if (!eligible.length) { return new Set(); }
+  const uris = eligible.map(c => vscode.Uri.file(c.path));
+  const writeAfter = () => Promise.all(eligible.map((c, i) => vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.after!, 'utf8'))));
+  try {
+    await Promise.all(eligible.map((c, i) => c.before === null
+      ? vscode.workspace.fs.delete(uris[i])
+      : vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.before, 'utf8'))));
+    // Open editors must show the pre-turn content before VS Code snapshots it
+    await Promise.all(eligible.map(c => documentShows(c.path, c.before ?? '')));
+    const result = trackExternalEdit(turn.stream, uris, writeAfter);
+    if (result && await result) { return new Set(eligible.map(c => c.path)); }
+  } catch (e) {
+    logError('replaying shell edits as external edit failed', e);
+  }
+  // Whatever happened, leave the agent's result on disk
+  await writeAfter().catch(e => logError('restoring agent result failed', e));
+  return new Set();
+}
+
+function findOpenDocument(path: string): vscode.TextDocument | undefined {
+  return vscode.workspace.textDocuments.find(d => d.uri.scheme === 'file' && d.uri.fsPath === path);
+}
+
+/** Resolve once the open editor buffer (if any) has reloaded to `text`, or after a timeout. */
+function documentShows(path: string, text: string, timeoutMs = 3000): Promise<void> {
+  const doc = findOpenDocument(path);
+  if (!doc || doc.getText() === text) { return Promise.resolve(); }
+  return new Promise(resolve => {
+    const done = () => { sub.dispose(); clearTimeout(timer); resolve(); };
+    const sub = vscode.workspace.onDidChangeTextDocument(e => {
+      if (e.document.uri.fsPath === path && e.document.getText() === text) { done(); }
+    });
+    const timer = setTimeout(done, timeoutMs);
+  });
 }
 
 /** Compare against baseline, then show the diff and Keep/Undo in the response. */

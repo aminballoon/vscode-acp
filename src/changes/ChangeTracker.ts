@@ -120,6 +120,19 @@ export class ChangeTracker {
   }
 
   /**
+   * Record a change found by comparing the workspace before and after a turn
+   * (e.g. a shell command edited the file). An existing entry keeps its
+   * earlier baseline, so undo still restores the pre-agent content.
+   */
+  noteTurnChange(path: string, before: string | null): Promise<void> {
+    return this.serial(path, async () => {
+      if (this.entries.has(path)) { return; }
+      this.entries.set(path, { baseline: before, agentText: before ?? '', version: ++this.versionCounter });
+      await this.persist();
+    });
+  }
+
+  /**
    * For agents that write files themselves and only report a diff.
    * Strict: only adopts oldText as baseline when disk already equals newText
    * exactly (guards against fragment diffs) and no entry exists yet.
