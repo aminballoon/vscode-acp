@@ -1,7 +1,7 @@
 {
   "name": "acp-chat",
   "displayName": "ACP Chat",
-  "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
+  "description": "Run ACP coding agents in VS Code Chat with streaming, session management, native permission prompts, and reviewable file edits with Keep/Undo.",
   "version": "0.2.0",
   "publisher": "aminballoon",
   "enabledApiProposals": [
@@ -31,7 +31,14 @@
     "agent",
     "ai",
     "coding agent",
-    "copilot"
+    "copilot",
+    "claude code",
+    "codex",
+    "gemini cli",
+    "qwen code",
+    "opencode",
+    "chat participant",
+    "code editing"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
