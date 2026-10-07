@@ -4,7 +4,7 @@ Chat with any [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) co
 
 Each agent runs as its own official CLI, so you use your existing subscription / OAuth login for that vendor. The extension never handles vendor tokens itself.
 
-> This is a fork of [formulahendry/vscode-acp](https://github.com/formulahendry/vscode-acp) (MIT). It adds a chat participant built on VS Code's proposed chat APIs, so it is installed from a `.vsix`, not from the Marketplace. See [Installation](#installation).
+> **Forked from [formulahendry/vscode-acp](https://github.com/formulahendry/vscode-acp)** (ACP Client by Jun Han, MIT) and maintained by [aminballoon](https://github.com/aminballoon). It adds native VS Code Chat integration built on proposed chat APIs, so it is installed from a `.vsix`, not from the Marketplace. See [Installation](#installation) and [Credits & License](#credits--license).
 
 ## Screenshots
 
@@ -16,7 +16,11 @@ Each agent runs as its own official CLI, so you use your existing subscription /
 
 ![Native Keep / Undo after an agent edit](docs/images/native-keep-undo.png)
 
-<sub>Screenshots come from the automated UI test (`npm run test:ui`), which uses a fake agent and a placeholder model, so the model picker reads "ACP Test".</sub>
+**Usage limits at a glance.** The Agents view shows each connected agent's account and plan, its five-hour and weekly limits with reset times, its context window, cost, and turns.
+
+<img src="docs/images/agents-usage.png" alt="Agents view with account, usage limits, context window and cost" width="480">
+
+<sub>Screenshots come from the automated UI test (`npm run test:ui`), which uses a fake agent and a placeholder model, so the model picker reads "ACP Test" and the account is `dev@example.com`.</sub>
 
 ## Features
 
@@ -25,6 +29,7 @@ Each agent runs as its own official CLI, so you use your existing subscription /
   - Each chat keeps its own picks; several agents can run side by side.
   - The agent's common slash commands (`/compact`, `/init`, `/review`, ...) are offered when the selected agent has them. Any other command can be typed and is sent as is.
   - Sessions the agent already has (from `session/list`, or created in this workspace) show up in the chat sessions list; opening one loads its history.
+  - Attach files, problems and symbols as context with `#`.
 - **`@acp` chat participant** in any chat (e.g. Local). It drives the agent's active session.
   - Streams agent messages, thinking, tool calls and plans as native chat parts.
   - Cancel works the same as in Copilot.
@@ -42,8 +47,15 @@ Each agent runs as its own official CLI, so you use your existing subscription /
   - Reopening a chat after a restart shows its transcript and reattaches the agent's own session (`session/resume`, else `session/load`), so context is kept.
   - Several agents can stay connected at once, one per chat.
   - Agents idle for `acp.chat.idleDisconnectMinutes` are disconnected to free memory, but only if they can restore sessions. The next message reconnects with the chat unchanged.
-- **Agents view** in the Activity Bar: connected agents first, then the others. Connect / disconnect / restart, and a click opens an ACP chat with that agent.
-  - Each connected agent shows what it reports: account and plan, context window, cost, tokens, and usage limits (Claude Code: five-hour / weekly limits from its `/usage` command, answered locally without a model call in a hidden side session, plus the SDK's rate limit events; Codex: the limits it records in `~/.codex/sessions`). Right-click an agent → **Refresh Usage** to update them.
+- **Agents view** in the Activity Bar, grouped into **Connected** and **Not connected**.
+  - Connect / disconnect / restart inline or from the context menu. A click opens an ACP chat with that agent.
+  - A connected agent's row shows its account and its highest usage limit (e.g. `you@example.com · 42%`). Hover it for a card with every limit as a colored bar.
+  - Expand it to see what the agent reports: account, plan, usage limits with a bar and reset time, context window, cost, tokens and turns, and agent version.
+  - Usage limits:
+    - Claude Code: five-hour / weekly limits from its `/usage` command, answered locally without a model call in a hidden side session, plus the SDK's rate limit events.
+    - Codex: the limits it records in `~/.codex/sessions`.
+    - Right-click an agent → **Refresh Usage** to update them.
+- **Status bar item** showing the connected agent (`ACP: <agent>`); click it to connect an agent.
 - **From the upstream ACP Client:**
   - Multi-agent configuration.
   - Terminal execution.
@@ -70,7 +82,7 @@ npm run setup
 
 `npm run setup` does four things:
 1. Builds `acp-chat-<version>.vsix`.
-2. Uninstalls the original **ACP Client** (`formulahendry.acp-client`) if present, because both register the same commands.
+2. Uninstalls the original **ACP Client** extension if present, because both register the same commands.
 3. Installs the `.vsix` with `code --install-extension`.
 4. Adds `"enable-proposed-api": ["aminballoon.acp-chat"]` to `~/.vscode/argv.json`, keeping comments and other settings. A backup is saved as `argv.json.bak`.
 
@@ -105,7 +117,7 @@ Then run **Preferences: Configure Runtime Arguments**, add the following to `arg
 
 ## Usage
 
-1. Click an agent in the **ACP** view (or run **ACP: Open ACP Chat**, `Cmd+Shift+A` / `Ctrl+Shift+A`). A new **ACP** chat opens in the Chat view with that agent picked.
+1. Click an agent in the **ACP** view (or run **Open ACP Chat**, `Cmd+Shift+A` / `Ctrl+Shift+A`). A new **ACP** chat opens in the Chat view with that agent picked.
    - Or pick **ACP** from the session type menu when starting a new chat.
 2. Choose the model, effort and mode under the input, then type your request. The agent connects on first use.
 3. When the agent wants to edit a file or run a command, approve it with **Allow** or decline with **Skip**.
@@ -151,7 +163,8 @@ Add your own with **ACP: Add Agent Configuration** or the `acp.agents` setting.
 | Command | Description |
 |---------|-------------|
 | `ACP: Connect to Agent` / `Disconnect Agent` / `Restart Agent` | Manage the agent process |
-| `ACP: Open ACP Chat` | Open a new ACP chat, with an agent picked when run from the Agents view |
+| `Open ACP Chat` (`Cmd+Shift+A` / `Ctrl+Shift+A`) | Open a new ACP chat, with an agent picked when run from the Agents view |
+| `ACP: Refresh Usage` | Re-read a connected agent's usage limits (Agents view context menu) |
 | `ACP: Keep All Changes` / `Undo All Changes` | Resolve everything in the Pending Changes view |
 | `ACP: Add Agent Configuration` / `Remove Agent` | Edit `acp.agents` |
 | `ACP: Show Log` / `Show Protocol Traffic` | Output channels for debugging |
@@ -175,6 +188,7 @@ The main pieces:
 - **`src/chat/TurnRouter.ts`:** connects client-side ACP requests to the chat turn that is streaming. It handles file writes (`textEdit`) and permission prompts.
 - **`src/chat/PermissionTool.ts`:** an internal language-model tool, invoked only to show VS Code's native confirmation UI.
 - **`src/chat/proposed.ts`:** the only file that calls proposed APIs, with feature detection. If a VS Code update changes these APIs, this is the file to fix.
+- **`src/ui/AgentTreeProvider.ts`** and **`src/core/AgentStatus.ts`:** the Agents view and the status each agent reports. `ClaudeUsageProbe.ts` and `CodexRateLimits.ts` read the usage limits.
 - **`src/changes/`:** the session-type-independent fallback. It snapshots files, tracks pending changes, and provides the Pending Changes view. `WorkspaceSnapshot.ts` finds edits made outside edit tools.
 
 ## Development

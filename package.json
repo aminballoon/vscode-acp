@@ -12,12 +12,12 @@
   "license": "MIT",
   "icon": "resources/icon.png",
   "bugs": {
-    "url": "https://github.com/aminballoon/acp-chat/issues"
+    "url": "https://github.com/aminballoon/vscode-acp/issues"
   },
-  "homepage": "https://github.com/aminballoon/acp-chat#readme",
+  "homepage": "https://github.com/aminballoon/vscode-acp#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aminballoon/acp-chat.git"
+    "url": "https://github.com/aminballoon/vscode-acp.git"
   },
   "engines": {
     "vscode": "^1.140.0"

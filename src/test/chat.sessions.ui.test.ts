@@ -66,8 +66,15 @@ suite('ACP chat session type UI', function () {
     await shot('s03-after-edit');
 
     // Agents view: connected agents with what they reported (account, context, usage)
+    // Narrow the editor so the side bar shows the limit rows' reset times in full
+    const resizeEditor = async (cmd: string) => {
+      await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
+      for (let i = 0; i < 12; i++) { await vscode.commands.executeCommand(cmd); }
+    };
+    await resizeEditor('workbench.action.decreaseViewWidth');
     await vscode.commands.executeCommand('acp-sessions.focus');
     await sleep(1500);
     await shot('s04-agents');
+    await resizeEditor('workbench.action.increaseViewWidth');
   });
 });
