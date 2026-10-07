@@ -9,8 +9,10 @@ import type { ChangeTracker } from '../changes/ChangeTracker';
 import { BaselineContentProvider } from '../changes/ChangesView';
 import { countLineChanges } from '../changes/diffUtil';
 import { TurnFileChange, WorkspaceSnapshot, WorkspaceSnapshots } from '../changes/WorkspaceSnapshot';
-import { promptWithSkills, SkillSelection } from './SkillSelection';
+import { PickedSkill, promptWithSkills, SkillInstructions, SkillSelection } from './SkillSelection';
+import { readSkillBody } from './SkillLibrary';
 import { hasNativeEdits, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
+import { TurnActivity } from './TurnActivity';
 import { log, logError } from '../utils/Logger';
 
 import type {
@@ -47,6 +49,8 @@ interface TurnState {
   savedByUser: Set<string>;
   work: Promise<unknown>[];
   thoughtN: number;
+  /** Elapsed time on running tool calls and agent silences. */
+  activity: TurnActivity;
 }
 
 /** Run a chat request against a given ACP session. */
@@ -100,14 +104,17 @@ export function registerChatParticipant(
     const turn = router.begin(sessionId, stream, token, request.toolInvocationToken, sessionResource);
     log(`chat request: sessionResource=${sessionResource?.toString() ?? 'n/a'} native=${turn.native}`);
 
+    const session = sessionManager.getSession(sessionId);
     const state: TurnState = {
       turn, sessionId,
       externals: new Map(), externalResults: new Map(), kinds: new Map(), editPaths: new Map(), reportedPaths: new Set(), savedByUser: new Set(), work: [], thoughtN: 0,
+      activity: new TurnActivity(session?.agentDisplayName || session?.agentName || 'agent', (tool, isUpdate) => pushToolCall(stream, tool, isUpdate)),
     };
 
     const listener = (n: SessionNotification) => {
       if (n.sessionId !== sessionId) { return; }
       try {
+        state.activity.touch();
         renderUpdate(n.update, state, router, tracker);
       } catch (e) {
         logError('chat participant: render failed', e);
@@ -121,7 +128,7 @@ export function registerChatParticipant(
 
     // Edits made outside edit tool calls (shell commands, the agent's own patch
     // tooling) are found by comparing the git working tree after the turn
-    const cwd = sessionManager.getSession(sessionId)?.cwd;
+    const cwd = session?.cwd;
     const snapshot = cwd ? await snapshots.take(cwd) : undefined;
     // Files saved in the editor meanwhile were changed by the user, not the agent
     const savedSub = vscode.workspace.onDidSaveTextDocument(d => state.savedByUser.add(d.uri.fsPath));
@@ -129,17 +136,22 @@ export function registerChatParticipant(
     try {
       // Slash commands picked in the chat input go to the agent as typed (`/compact ...`),
       // together with the skills picked in the toolbar for this prompt
-      const agentName = sessionManager.getSession(sessionId)?.agentName;
-      const picked = agentName ? skills.take(agentName) : [];
-      const prompt = promptWithSkills(request.prompt, [...(request.command ? [request.command] : []), ...picked.filter(s => s !== request.command)]);
-      sessionManager.recordFirstPrompt(sessionId, prompt);
-      const res = await sessionManager.sendPrompt(sessionId, prompt);
+      const picked = session?.agentName ? skills.take(session.agentName) : [];
+      const commands = [
+        ...(request.command ? [request.command] : []),
+        ...picked.filter(s => !s.path && s.name !== request.command).map(s => s.name),
+      ];
+      const instructions = await readInstructions(picked, stream);
+      // The skill instructions stay out of the session title
+      sessionManager.recordFirstPrompt(sessionId, promptWithSkills(request.prompt, commands));
+      const res = await sessionManager.sendPrompt(sessionId, promptWithSkills(request.prompt, commands, instructions));
       sessionManager.touchHistory(sessionId);
       if (res.stopReason === 'refusal') { stream.markdown('\n\n_The agent refused this request._'); }
     } catch (e: any) {
       logError('chat participant: prompt failed', e);
       stream.markdown(`\n\n**Error:** ${e?.message ?? e}`);
     } finally {
+      state.activity.dispose();
       for (const done of state.externals.values()) { done(); }
       // Report edits of tool calls that never reached completed/failed
       for (const id of [...state.editPaths.keys()]) { finishToolEdits(id, state, tracker); }
@@ -168,6 +180,19 @@ export function registerChatParticipant(
   return { handler, runTurn, requestCount: () => requestCount };
 }
 
+/** Instructions of the picked markdown skills; a missing file is reported and skipped. */
+async function readInstructions(picked: PickedSkill[], stream: vscode.ChatResponseStream): Promise<SkillInstructions[]> {
+  const read = await Promise.all(picked.filter(s => s.path).map(skill => readSkillBody(skill.path!).then(
+    body => ({ name: skill.name, body }),
+    e => {
+      logError(`skill ${skill.path} could not be read`, e);
+      stream.markdown(`_Skill **${skill.name}** was skipped: ${skill.path} could not be read._\n\n`);
+      return undefined;
+    },
+  )));
+  return read.filter(s => s !== undefined);
+}
+
 function renderUpdate(u: SessionUpdate, st: TurnState, router: TurnRouter, tracker: ChangeTracker): void {
   const { stream } = st.turn;
   switch (u.sessionUpdate) {
@@ -181,7 +206,7 @@ function renderUpdate(u: SessionUpdate, st: TurnState, router: TurnRouter, track
     case 'tool_call_update': {
       const isUpdate = u.sessionUpdate === 'tool_call_update';
       const status = u.status ?? (isUpdate ? 'in_progress' : 'pending');
-      pushToolCall(stream, { toolCallId: u.toolCallId, title: u.title ?? 'Tool call', status }, isUpdate);
+      st.activity.tool(u.toolCallId, u.title, status, isUpdate);
       if (u.kind) { st.kinds.set(u.toolCallId, u.kind); }
       // Paths often arrive only in later updates (Claude sends empty locations first)
       const tool: ToolCallInfo = { ...u, kind: u.kind ?? st.kinds.get(u.toolCallId) };

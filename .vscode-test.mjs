@@ -6,7 +6,7 @@ const node = execSync('/bin/zsh -l -c "command -v node"').toString().trim();
 export default defineConfig([
 	{
 		label: 'unit',
-		files: 'out/test/extension.test.js',
+		files: ['out/test/extension.test.js', 'out/test/skills.test.js', 'out/test/activity.test.js'],
 	},
 	{
 		// Runs against the locally installed VS Code so proposed APIs and the

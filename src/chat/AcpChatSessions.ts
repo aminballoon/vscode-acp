@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'node:crypto';
+import * as os from 'node:os';
 
 import type { SessionInfo, SessionManager } from '../core/SessionManager';
 import type { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import type { ChatTurnRunner } from './AcpChatParticipant';
 import type { TurnRouter } from './TurnRouter';
-import { SkillSelection, skillsLabel } from './SkillSelection';
+import { PickedSkill, SkillSelection, skillsLabel } from './SkillSelection';
+import { loadSkills } from './SkillLibrary';
+import { configuredSkillPaths } from './SkillCommands';
 import { AcpChatStore, StoredChat, StoredTurn } from './AcpChatStore';
 import { getAgentNames } from '../config/AgentConfig';
 import { log, logError } from '../utils/Logger';
@@ -302,14 +305,19 @@ export function registerAcpChatSessions(
       });
     }
 
-    // Skills for the next prompt: picked (several at once) in a quick pick, shown as one item
-    if (agent && session?.availableCommands.length) {
-      const picked = skills.get(agent.id);
+    // Skills for the next prompt: picked (several at once) in a quick pick, shown as one item.
+    // Markdown skills work with any agent, so the picker shows even without agent commands
+    if (agent) {
+      const picked = skills.get(agent.id).map(s => s.name);
       const none: Item = { id: 'none', name: picked.length ? 'No skills' : 'Skills', description: 'Run the prompt without a skill' };
       const items = picked.length ? [none, { id: 'picked', name: skillsLabel(picked), description: picked.join(', ') }] : [none];
       groups.push({
         id: GROUP.skills, name: 'Skills', icon: new vscode.ThemeIcon('extensions'), items, selected: items[items.length - 1],
-        commands: [{ title: 'Choose Skills…', command: 'acp.skills.choose', arguments: [agent.id] }],
+        commands: [
+          { title: 'Choose Skills…', command: 'acp.skills.choose', arguments: [agent.id] },
+          { title: 'New Skill…', command: 'acp.skills.new' },
+          { title: 'Add Skill Files…', command: 'acp.skills.addPath' },
+        ],
       });
     }
 
@@ -642,22 +650,43 @@ export function registerAcpChatSessions(
     skills.off('changed', onOptionsChanged);
   } });
 
-  // Multi-select of the agent's skills (slash commands) for its next prompt
+  // Multi-select for the agent's next prompt: markdown skills (any agent) and the agent's own commands
   // From the picker VS Code passes `{ inputState, sessionResource }` instead of our arguments
   context.subscriptions.push(vscode.commands.registerCommand('acp.skills.choose', async (arg?: string | { inputState?: vscode.ChatSessionInputState }) => {
     const fromPicker = typeof arg === 'object' ? selectionsOf(arg.inputState?.groups)[GROUP.agent] : arg;
     const agentName = fromPicker ?? commandsAgent ?? sessionManager.getActiveAgentName() ?? undefined;
-    const commands = agentName ? sessionManager.getAgentSession(agentName)?.availableCommands ?? [] : [];
-    if (!agentName || !commands.length) {
-      vscode.window.showInformationMessage('ACP: the selected agent offers no skills.');
+    if (!agentName) {
+      vscode.window.showInformationMessage('ACP: pick an agent first.');
       return;
     }
-    const current = new Set(skills.get(agentName));
-    const picks = await vscode.window.showQuickPick(
-      commands.map(c => ({ label: c.name, description: c.description, picked: current.has(c.name) })),
-      { canPickMany: true, matchOnDescription: true, title: `Skills for the next prompt to ${agentName}`, placeHolder: 'Pick one or more skills' },
-    );
-    if (picks) { skills.set(agentName, picks.map(p => p.label)); }
+    const fileSkills = await loadSkills(configuredSkillPaths());
+    const commands = sessionManager.getAgentSession(agentName)?.availableCommands ?? [];
+    const current = skills.get(agentName);
+    const isPicked = (s: PickedSkill) => current.some(c => c.name === s.name && c.path === s.path);
+
+    type SkillItem = vscode.QuickPickItem & { skill?: PickedSkill };
+    const item = (skill: PickedSkill, description?: string, detail?: string): SkillItem =>
+      ({ label: skill.name, description, detail, picked: isPicked(skill), skill });
+    const items: SkillItem[] = [];
+    if (fileSkills.length) {
+      items.push({ label: 'Skills · every agent', kind: vscode.QuickPickItemKind.Separator });
+      items.push(...fileSkills.map(s => item({ name: s.name, path: s.path }, s.description, s.path.replace(os.homedir(), '~'))));
+    }
+    if (commands.length) {
+      items.push({ label: `${agentName} commands`, kind: vscode.QuickPickItemKind.Separator });
+      items.push(...commands.map(c => item({ name: c.name }, c.description)));
+    }
+    if (!items.length) {
+      const action = await vscode.window.showInformationMessage(
+        `ACP: no skills yet. Create one, or add markdown files you already have.`, 'New Skill…', 'Add Skill Files…',
+      );
+      if (action) { await vscode.commands.executeCommand(action === 'New Skill…' ? 'acp.skills.new' : 'acp.skills.addPath'); }
+      return;
+    }
+    const picks = await vscode.window.showQuickPick(items, {
+      canPickMany: true, matchOnDescription: true, title: `Skills for the next prompt to ${agentName}`, placeHolder: 'Pick one or more skills',
+    });
+    if (picks) { skills.set(agentName, picks.flatMap(p => p.skill ? [p.skill] : [])); }
   }));
   return {
     handler: sessionHandler, store, disconnectIdleAgents,

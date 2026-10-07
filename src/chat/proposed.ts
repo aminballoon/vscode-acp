@@ -73,6 +73,7 @@ export interface ToolState {
   toolCallId: string;
   title: string;
   status: 'pending' | 'in_progress' | 'completed' | 'failed' | string;
+  presentation?: 'hidden' | 'hiddenAfterComplete';
 }
 
 /** Render/update an ACP tool call as a native tool-invocation part. */
@@ -90,5 +91,6 @@ export function pushToolCall(stream: vscode.ChatResponseStream, tool: ToolState,
   part.isComplete = done;
   part.isError = tool.status === 'failed';
   part.enablePartialUpdate = isUpdate;
+  if (tool.presentation) { part.presentation = tool.presentation; }
   stream.push(part);
 }

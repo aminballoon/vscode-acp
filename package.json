@@ -244,6 +244,15 @@
         "icon": "$(extensions)"
       },
       {
+        "command": "acp.skills.new",
+        "title": "ACP: New Skill",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "acp.skills.addPath",
+        "title": "ACP: Add Skill Files or Folder"
+      },
+      {
         "command": "acp.changes.openDiff",
         "title": "ACP: Open Diff",
         "icon": "$(diff)"
@@ -524,6 +533,12 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Send agent file edits to VS Code's native chat edit UI (`textEdit` / `externalEdit`, proposed API). Agent host sessions (e.g. Copilot CLI) reject these calls; there the extension falls back to snapshotting files and showing a diff with Keep/Undo in the response."
+        },
+        "acp.skills.paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["~/.acp/skills", ".acp/skills"],
+          "markdownDescription": "Markdown skills offered to every agent in the Skills picker; their instructions are sent with the prompt. Each entry is a `.md` file or a folder of them (subfolders with a `SKILL.md`, like `~/.claude/skills`, count too). `~` is your home folder; relative paths resolve in each workspace folder. Front matter `name` and `description` are optional."
         },
         "acp.chat.idleDisconnectMinutes": {
           "type": "number",
