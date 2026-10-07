@@ -115,6 +115,20 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     const name = sessionManager.getSession(n.sessionId)?.agentName;
     if (name) { agentStatus.noteSessionUpdate(name, n); }
   });
+  // Session state the agent pushes: slash commands / skills, config options and title
+  sessionUpdateHandler.addListener(({ sessionId, update }) => {
+    switch (update.sessionUpdate) {
+      case 'available_commands_update':
+        sessionManager.applyAvailableCommands(sessionId, update.availableCommands ?? []);
+        break;
+      case 'config_option_update':
+        sessionManager.applyConfigOptions(sessionId, update.configOptions ?? []);
+        break;
+      case 'session_info_update':
+        sessionManager.applySessionInfoUpdate(sessionId, update);
+        break;
+    }
+  });
 
   // --- UI ---
   const agentTreeProvider = new AgentTreeProvider(sessionManager, agentStatus);

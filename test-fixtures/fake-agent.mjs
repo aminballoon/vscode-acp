@@ -41,6 +41,15 @@ class FakeAgent {
     await this.conn.extNotification('_auth/status_update', {
       authStatus: { kind: 'account', label: 'Fake Pro', account: { email: 'dev@example.com', plan: 'pro' } },
     });
+    // Like claude-agent-acp: commands (skills) arrive right after the session is created
+    setTimeout(() => void this.conn.sessionUpdate({ sessionId, update: {
+      sessionUpdate: 'available_commands_update',
+      availableCommands: [
+        { name: 'compact', description: 'Compact' },
+        { name: 'review', description: 'Review code changes' },
+        { name: 'simplify', description: 'Simplify the changed code' },
+      ],
+    } }), 50);
     return { sessionId, configOptions: this.configOptions() };
   }
   // Session Config Options, so the chat pickers have a model and effort to show
