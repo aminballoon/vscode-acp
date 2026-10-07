@@ -307,6 +307,12 @@
         "command": "acp.restartAgent",
         "title": "ACP: Restart Agent",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "acp.refreshUsage",
+        "title": "Refresh Usage",
+        "category": "ACP",
+        "icon": "$(refresh)"
       }
     ],
     "menus": {
@@ -390,6 +396,10 @@
         },
         {
           "command": "acp.restartAgent",
+          "when": "view == acp-sessions && viewItem == agent-connected"
+        },
+        {
+          "command": "acp.refreshUsage",
           "when": "view == acp-sessions && viewItem == agent-connected"
         }
       ]

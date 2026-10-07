@@ -43,7 +43,7 @@ Each agent runs as its own official CLI, so you use your existing subscription /
   - Several agents can stay connected at once, one per chat.
   - Agents idle for `acp.chat.idleDisconnectMinutes` are disconnected to free memory, but only if they can restore sessions. The next message reconnects with the chat unchanged.
 - **Agents view** in the Activity Bar: connected agents first, then the others. Connect / disconnect / restart, and a click opens an ACP chat with that agent.
-  - Each connected agent shows what it reports: account and plan, context window, cost, tokens, and usage limits (Claude Code: five-hour / weekly limits from the SDK's rate limit events; Codex: the limits it records in `~/.codex/sessions`).
+  - Each connected agent shows what it reports: account and plan, context window, cost, tokens, and usage limits (Claude Code: five-hour / weekly limits from its `/usage` command, answered locally without a model call in a hidden side session, plus the SDK's rate limit events; Codex: the limits it records in `~/.codex/sessions`). Right-click an agent → **Refresh Usage** to update them.
 - **From the upstream ACP Client:**
   - Multi-agent configuration.
   - Terminal execution.

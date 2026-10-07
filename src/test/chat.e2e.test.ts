@@ -289,6 +289,21 @@ suite('Chat participant e2e (fake agent)', function () {
     assert.ok(fiveHour.resetsAt && fiveHour.resetsAt > Date.now(), 'reset time in epoch ms');
   });
 
+  test('agent status: Claude plan limits from /usage in a hidden side session', async () => {
+    await addFakeAgent('Claude Fake');
+    await vscode.commands.executeCommand('acp.connectAgent', 'Claude Fake');
+    const limits = await waitFor(() => {
+      const l = api.agentStatus('Claude Fake')?.limits;
+      return l?.['5-hour limit'] && l['Weekly limit'] ? l : undefined;
+    }, 20_000, 'Claude usage limits');
+    assert.strictEqual(limits['5-hour limit'].usedPercent, 62);
+    assert.strictEqual(limits['Weekly limit'].usedPercent, 2);
+    assert.ok(limits['5-hour limit'].resetsAt, 'reset time parsed');
+    // The side session is not a chat or a listed session, and its turn is not counted
+    assert.ok(!(await api.listAcpChats()).some(c => c.agentName === 'Claude Fake'));
+    assert.strictEqual(api.agentStatus('Claude Fake')?.turns, 0);
+  });
+
   test('Pending Changes only covers files in the open workspace', async () => {
     const outside = '/tmp/acp-outside-workspace.txt';
     await api.changeTracker.noteTurnChange(outside, 'before');

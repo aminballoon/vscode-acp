@@ -16,6 +16,7 @@ import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { AgentTreeProvider } from './ui/AgentTreeProvider';
 import { AgentStatusInfo, AgentStatusStore } from './core/AgentStatus';
 import { readCodexRateLimits } from './core/CodexRateLimits';
+import { ClaudeUsageProbe } from './core/ClaudeUsageProbe';
 import { StatusBarManager } from './ui/StatusBarManager';
 import { getAgentNames } from './config/AgentConfig';
 import { fetchRegistry } from './config/RegistryClient';
@@ -86,18 +87,29 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   };
   // Codex keeps its rate limits in its own session files, not in ACP messages
   const isCodex = (name: string) => /codex/i.test(sessionManager.getAgentSession(name)?.initResponse.agentInfo?.name ?? name);
-  const refreshCodexLimits = (name: string, sessionId?: string) => {
-    if (!isCodex(name)) { return; }
-    void readCodexRateLimits(sessionId).then(limits => { if (limits) { agentStatus.noteLimits(name, limits); } });
+  // Claude Code answers `/usage` (plan limits) locally; asked in a hidden side session
+  const isClaude = (name: string) => /claude/i.test(sessionManager.getAgentSession(name)?.initResponse.agentInfo?.name ?? name);
+  const claudeUsage = new ClaudeUsageProbe(
+    sessionManager, sessionUpdateHandler, vscode.Uri.joinPath(context.globalStorageUri, 'usage-probe').fsPath, context.globalState);
+  const refreshLimits = (name: string, sessionId?: string, force = false) => {
+    if (!sessionManager.isAgentConnected(name)) { return; }
+    if (isCodex(name)) {
+      void readCodexRateLimits(sessionId).then(limits => { if (limits) { agentStatus.noteLimits(name, limits); } });
+    } else if (isClaude(name)) {
+      void claudeUsage.read(name, force).then(limits => { if (limits) { agentStatus.noteLimits(name, limits); } });
+    }
   };
+  context.subscriptions.push(vscode.commands.registerCommand('acp.refreshUsage', (item?: { agentName?: string }) => {
+    for (const name of item?.agentName ? [item.agentName] : sessionManager.getConnectedAgentNames()) { refreshLimits(name, undefined, true); }
+  }));
   sessionManager.on('agent-connected', (name: string) => {
     agentStatus.noteConnected(name, sessionManager.getAgentSession(name)?.initResponse.agentInfo ?? undefined);
-    refreshCodexLimits(name);
+    refreshLimits(name);
   });
   sessionManager.on('agent-disconnected', (name: string) => agentStatus.noteDisconnected(name));
   sessionManager.on('prompt-response', (name: string, response, sessionId: string) => {
     agentStatus.notePromptResponse(name, response);
-    refreshCodexLimits(name, sessionId);
+    refreshLimits(name, sessionId);
   });
   sessionUpdateHandler.addListener(n => {
     const name = sessionManager.getSession(n.sessionId)?.agentName;

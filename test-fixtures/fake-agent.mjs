@@ -64,6 +64,13 @@ class FakeAgent {
     const name = (text.match(/(\S+\.\w+)/) || [])[1];
     const path = name && nodePath.resolve(this.cwds.get(sessionId) || process.cwd(), name);
     const send = update => this.conn.sessionUpdate({ sessionId, update });
+    // Like claude-agent-acp's structured /usage reply (answered locally, no model call)
+    if (text === '/usage') {
+      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text:
+        '## Usage\n\n> Claude pro subscription usage\n\n### Limits\n\n**5-hour limit** — **62%** · Resets Oct 7, 2:29 PM GMT+7\n\n`████░░`\n\n' +
+        '**Weekly · all models** — **2%** · Resets Oct 14, 12:59 PM GMT+7\n' } });
+      return { stopReason: 'end_turn' };
+    }
     await send({ sessionUpdate: 'usage_update', used: 12000, size: 200000, cost: { amount: 0.25, currency: 'USD' } });
     if (this.rawSdk.has(sessionId)) {
       await this.conn.extNotification('_claude/sdkMessage', { sessionId, message: {
