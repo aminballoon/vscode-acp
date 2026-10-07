@@ -239,6 +239,11 @@
     ],
     "commands": [
       {
+        "command": "acp.skills.choose",
+        "title": "ACP: Choose Skills for Next Prompt",
+        "icon": "$(extensions)"
+      },
+      {
         "command": "acp.changes.openDiff",
         "title": "ACP: Open Diff",
         "icon": "$(diff)"

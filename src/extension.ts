@@ -10,6 +10,7 @@ import { registerChangesView } from './changes/ChangesView';
 import { TurnRouter } from './chat/TurnRouter';
 import { PermissionTool, PERMISSION_TOOL } from './chat/PermissionTool';
 import { registerChatParticipant } from './chat/AcpChatParticipant';
+import { SkillSelection } from './chat/SkillSelection';
 import { registerAcpChatSessions } from './chat/AcpChatSessions';
 import type { StoredChat } from './chat/AcpChatStore';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
@@ -134,9 +135,10 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   const agentTreeProvider = new AgentTreeProvider(sessionManager, agentStatus);
   const treeView = vscode.window.createTreeView('acp-sessions', { treeDataProvider: agentTreeProvider });
 
-  const chatParticipant = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker);
+  const skillSelection = new SkillSelection();
+  const chatParticipant = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker, skillSelection);
   // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input
-  const acpSessions = registerAcpChatSessions(context, sessionManager, sessionUpdateHandler, turnRouter, chatParticipant.runTurn);
+  const acpSessions = registerAcpChatSessions(context, sessionManager, sessionUpdateHandler, turnRouter, chatParticipant.runTurn, skillSelection);
 
   const statusBarManager = new StatusBarManager(sessionManager);
 

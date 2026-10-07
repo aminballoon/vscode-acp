@@ -41,6 +41,12 @@ suite('ACP chat session type UI', function () {
     await sleep(3000);
     await shot('s01-acp-session');
 
+    // Skills picker: several skills for the next prompt
+    void vscode.commands.executeCommand('acp.skills.choose', 'Claude Code (fake)');
+    await sleep(1500);
+    await shot('s01b-skills');
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+
     const before = api.chatRequestCount();
     // Plain prompt, no @acp: the ACP session routes it to the selected agent
     // The Chat view refuses requests without a model; the fake-lm fixture provides one

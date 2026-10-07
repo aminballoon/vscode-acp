@@ -9,6 +9,7 @@ import type { ChangeTracker } from '../changes/ChangeTracker';
 import { BaselineContentProvider } from '../changes/ChangesView';
 import { countLineChanges } from '../changes/diffUtil';
 import { TurnFileChange, WorkspaceSnapshot, WorkspaceSnapshots } from '../changes/WorkspaceSnapshot';
+import { promptWithSkills, SkillSelection } from './SkillSelection';
 import { hasNativeEdits, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
 import { log, logError } from '../utils/Logger';
 
@@ -79,6 +80,7 @@ export function registerChatParticipant(
   sessionUpdateHandler: SessionUpdateHandler,
   router: TurnRouter,
   tracker: ChangeTracker,
+  skills: SkillSelection,
 ): ChatParticipantHandle {
   let requestCount = 0;
   const snapshots = new WorkspaceSnapshots(context.globalStorageUri.fsPath);
@@ -125,8 +127,11 @@ export function registerChatParticipant(
     const savedSub = vscode.workspace.onDidSaveTextDocument(d => state.savedByUser.add(d.uri.fsPath));
 
     try {
-      // Slash commands picked in the chat input go to the agent as typed (`/compact ...`)
-      const prompt = request.command ? `/${request.command} ${request.prompt}`.trim() : request.prompt;
+      // Slash commands picked in the chat input go to the agent as typed (`/compact ...`),
+      // together with the skills picked in the toolbar for this prompt
+      const agentName = sessionManager.getSession(sessionId)?.agentName;
+      const picked = agentName ? skills.take(agentName) : [];
+      const prompt = promptWithSkills(request.prompt, [...(request.command ? [request.command] : []), ...picked.filter(s => s !== request.command)]);
       sessionManager.recordFirstPrompt(sessionId, prompt);
       const res = await sessionManager.sendPrompt(sessionId, prompt);
       sessionManager.touchHistory(sessionId);

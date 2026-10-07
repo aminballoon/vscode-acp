@@ -5,6 +5,7 @@ import type { SessionInfo, SessionManager } from '../core/SessionManager';
 import type { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import type { ChatTurnRunner } from './AcpChatParticipant';
 import type { TurnRouter } from './TurnRouter';
+import { SkillSelection, skillsLabel } from './SkillSelection';
 import { AcpChatStore, StoredChat, StoredTurn } from './AcpChatStore';
 import { getAgentNames } from '../config/AgentConfig';
 import { log, logError } from '../utils/Logger';
@@ -23,6 +24,7 @@ const GROUP = {
   effort: 'effort',
   mode: 'mode',
   permissions: 'permissions',
+  skills: 'skills',
 } as const;
 
 // The picker shows an item's icon instead of its name, so only agents with a logo get one
@@ -143,6 +145,7 @@ export function registerAcpChatSessions(
   sessionUpdateHandler: SessionUpdateHandler,
   router: TurnRouter,
   runTurn: ChatTurnRunner,
+  skills: SkillSelection,
 ): {
   handler: vscode.ChatRequestHandler;
   store: AcpChatStore;
@@ -299,6 +302,17 @@ export function registerAcpChatSessions(
       });
     }
 
+    // Skills for the next prompt: picked (several at once) in a quick pick, shown as one item
+    if (agent && session?.availableCommands.length) {
+      const picked = skills.get(agent.id);
+      const none: Item = { id: 'none', name: picked.length ? 'No skills' : 'Skills', description: 'Run the prompt without a skill' };
+      const items = picked.length ? [none, { id: 'picked', name: skillsLabel(picked), description: picked.join(', ') }] : [none];
+      groups.push({
+        id: GROUP.skills, name: 'Skills', icon: new vscode.ThemeIcon('extensions'), items, selected: items[items.length - 1],
+        commands: [{ title: 'Choose Skills…', command: 'acp.skills.choose', arguments: [agent.id] }],
+      });
+    }
+
     // Agents with their own modes (e.g. Claude: Manual / Accept edits / Bypass) already
     // cover the permission policy, so only offer ours otherwise. Not `kind: 'permissions'`:
     // VS Code hides its permission picker in sessions locked to an extension agent.
@@ -369,6 +383,9 @@ export function registerAcpChatSessions(
         return;
       }
       const agentName = selected[GROUP.agent];
+      if (changed.includes(GROUP.skills) && selected[GROUP.skills] === 'none' && agentName) {
+        skills.set(agentName, []);
+      }
       const session = agentName ? sessionForPicks(state, agentName) : undefined;
       if (session) {
         await applySelections(session, Object.fromEntries(changed.map(k => [k, selected[k]])));
@@ -617,9 +634,31 @@ export function registerAcpChatSessions(
 
   // Keep pickers in sync when the agent's options change (e.g. a model change adjusts effort levels)
   const onOptionsChanged = () => liveStates.forEach(state => refresh(state));
-  const events = ['active-session-changed', 'config-options-changed', 'model-changed', 'mode-changed'];
+  const events = ['active-session-changed', 'config-options-changed', 'model-changed', 'mode-changed', 'available-commands-changed'];
   for (const event of events) { sessionManager.on(event, onOptionsChanged); }
-  context.subscriptions.push({ dispose: () => events.forEach(e => sessionManager.off(e, onOptionsChanged)) });
+  skills.on('changed', onOptionsChanged);
+  context.subscriptions.push({ dispose: () => {
+    events.forEach(e => sessionManager.off(e, onOptionsChanged));
+    skills.off('changed', onOptionsChanged);
+  } });
+
+  // Multi-select of the agent's skills (slash commands) for its next prompt
+  // From the picker VS Code passes `{ inputState, sessionResource }` instead of our arguments
+  context.subscriptions.push(vscode.commands.registerCommand('acp.skills.choose', async (arg?: string | { inputState?: vscode.ChatSessionInputState }) => {
+    const fromPicker = typeof arg === 'object' ? selectionsOf(arg.inputState?.groups)[GROUP.agent] : arg;
+    const agentName = fromPicker ?? commandsAgent ?? sessionManager.getActiveAgentName() ?? undefined;
+    const commands = agentName ? sessionManager.getAgentSession(agentName)?.availableCommands ?? [] : [];
+    if (!agentName || !commands.length) {
+      vscode.window.showInformationMessage('ACP: the selected agent offers no skills.');
+      return;
+    }
+    const current = new Set(skills.get(agentName));
+    const picks = await vscode.window.showQuickPick(
+      commands.map(c => ({ label: c.name, description: c.description, picked: current.has(c.name) })),
+      { canPickMany: true, matchOnDescription: true, title: `Skills for the next prompt to ${agentName}`, placeHolder: 'Pick one or more skills' },
+    );
+    if (picks) { skills.set(agentName, picks.map(p => p.label)); }
+  }));
   return {
     handler: sessionHandler, store, disconnectIdleAgents,
     listChats: async () => {
