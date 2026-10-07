@@ -36,8 +36,8 @@ suite('ACP chat session type UI', function () {
       await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
     }
 
-    // Command contributed by VS Code for every chat session type
-    await vscode.commands.executeCommand('workbench.action.chat.openNewChatSessionInPlace.acp', 'sidebar');
+    // What clicking an agent in the Agents view does: a new ACP chat with that agent picked
+    await vscode.commands.executeCommand('acp.openChat', 'Claude Code (fake)');
     await sleep(3000);
     await shot('s01-acp-session');
 
@@ -64,5 +64,10 @@ suite('ACP chat session type UI', function () {
     await waitFor(edited, 20_000, 'agent to write the file');
     await sleep(3000);
     await shot('s03-after-edit');
+
+    // Agents view: connected agents with what they reported (account, context, usage)
+    await vscode.commands.executeCommand('acp-sessions.focus');
+    await sleep(1500);
+    await shot('s04-agents');
   });
 });

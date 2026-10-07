@@ -76,7 +76,119 @@
           "supportsFileAttachments": true,
           "supportsProblemAttachments": true,
           "supportsSymbolAttachments": true
-        }
+        },
+        "commands": [
+          {
+            "name": "compact",
+            "description": "Summarize the conversation to free up context",
+            "when": "acp.agentCommands =~ /,compact,/"
+          },
+          {
+            "name": "context",
+            "description": "Show what is using the context window",
+            "when": "acp.agentCommands =~ /,context,/"
+          },
+          {
+            "name": "init",
+            "description": "Create an instructions file for this project",
+            "when": "acp.agentCommands =~ /,init,/"
+          },
+          {
+            "name": "plan",
+            "description": "Plan before making changes",
+            "when": "acp.agentCommands =~ /,plan,/"
+          },
+          {
+            "name": "goal",
+            "description": "Set a goal for the agent to work towards",
+            "when": "acp.agentCommands =~ /,goal,/"
+          },
+          {
+            "name": "review",
+            "description": "Review code changes",
+            "when": "acp.agentCommands =~ /,review,/"
+          },
+          {
+            "name": "review-branch",
+            "description": "Review the changes on this branch",
+            "when": "acp.agentCommands =~ /,review\\-branch,/"
+          },
+          {
+            "name": "review-commit",
+            "description": "Review a commit",
+            "when": "acp.agentCommands =~ /,review\\-commit,/"
+          },
+          {
+            "name": "code-review",
+            "description": "Review the current diff for bugs",
+            "when": "acp.agentCommands =~ /,code\\-review,/"
+          },
+          {
+            "name": "security-review",
+            "description": "Review pending changes for security issues",
+            "when": "acp.agentCommands =~ /,security\\-review,/"
+          },
+          {
+            "name": "simplify",
+            "description": "Simplify the changed code",
+            "when": "acp.agentCommands =~ /,simplify,/"
+          },
+          {
+            "name": "verify",
+            "description": "Verify that a change works",
+            "when": "acp.agentCommands =~ /,verify,/"
+          },
+          {
+            "name": "debug",
+            "description": "Debug a problem",
+            "when": "acp.agentCommands =~ /,debug,/"
+          },
+          {
+            "name": "loop",
+            "description": "Run a prompt repeatedly",
+            "when": "acp.agentCommands =~ /,loop,/"
+          },
+          {
+            "name": "recap",
+            "description": "Summarize what was done",
+            "when": "acp.agentCommands =~ /,recap,/"
+          },
+          {
+            "name": "rename",
+            "description": "Rename this session",
+            "when": "acp.agentCommands =~ /,rename,/"
+          },
+          {
+            "name": "status",
+            "description": "Show agent status",
+            "when": "acp.agentCommands =~ /,status,/"
+          },
+          {
+            "name": "usage",
+            "description": "Show usage and limits",
+            "when": "acp.agentCommands =~ /,usage,/"
+          },
+          {
+            "name": "mcp",
+            "description": "Manage MCP servers",
+            "when": "acp.agentCommands =~ /,mcp,/"
+          },
+          {
+            "name": "skills",
+            "description": "List available skills",
+            "when": "acp.agentCommands =~ /,skills,/"
+          },
+          {
+            "name": "agents",
+            "description": "Manage subagents",
+            "when": "acp.agentCommands =~ /,agents,/"
+          },
+          {
+            "name": "doctor",
+            "description": "Check the agent installation",
+            "when": "acp.agentCommands =~ /,doctor,/"
+          }
+        ]
       }
     ],
     "chatParticipants": [
@@ -108,11 +220,6 @@
           "id": "acp-changes",
           "name": "Pending Changes",
           "type": "tree"
-        },
-        {
-          "id": "acp-chat",
-          "name": "Chat",
-          "type": "webview"
         }
       ]
     },
@@ -162,27 +269,13 @@
         "icon": "$(plug)"
       },
       {
-        "command": "acp.newConversation",
-        "title": "ACP: New Conversation",
-        "icon": "$(add)"
-      },
-      {
-        "command": "acp.sendPrompt",
-        "title": "ACP: Send Prompt"
-      },
-      {
-        "command": "acp.cancelTurn",
-        "title": "ACP: Cancel Current Turn",
-        "icon": "$(debug-stop)"
-      },
-      {
         "command": "acp.disconnectAgent",
         "title": "ACP: Disconnect Agent",
         "icon": "$(debug-disconnect)"
       },
       {
         "command": "acp.openChat",
-        "title": "ACP: Open Chat Panel"
+        "title": "Open ACP Chat"
       },
       {
         "command": "acp.addAgent",
@@ -206,42 +299,9 @@
         "title": "ACP: Browse Agent Registry"
       },
       {
-        "command": "acp.setMode",
-        "title": "ACP: Set Agent Mode"
-      },
-      {
-        "command": "acp.setModel",
-        "title": "ACP: Set Agent Model"
-      },
-      {
-        "command": "acp.attachFile",
-        "title": "ACP: Attach File to Prompt",
-        "icon": "$(attach)"
-      },
-      {
         "command": "acp.refreshAgents",
         "title": "Refresh",
         "icon": "$(refresh)"
-      },
-      {
-        "command": "acp.refreshSessions",
-        "title": "ACP: Refresh Sessions"
-      },
-      {
-        "command": "acp.openSession",
-        "title": "ACP: Open Session"
-      },
-      {
-        "command": "acp.loadMoreSessions",
-        "title": "ACP: Load More Sessions"
-      },
-      {
-        "command": "acp.copySessionId",
-        "title": "Copy Session ID"
-      },
-      {
-        "command": "acp.forgetSession",
-        "title": "Forget Session"
       },
       {
         "command": "acp.restartAgent",
@@ -270,22 +330,6 @@
         {
           "command": "acp.changes.undoAll",
           "when": "acp.hasPendingChanges"
-        },
-        {
-          "command": "acp.openSession",
-          "when": "false"
-        },
-        {
-          "command": "acp.loadMoreSessions",
-          "when": "false"
-        },
-        {
-          "command": "acp.copySessionId",
-          "when": "false"
-        },
-        {
-          "command": "acp.forgetSession",
-          "when": "false"
         }
       ],
       "view/title": [
@@ -312,38 +356,6 @@
         {
           "command": "acp.browseRegistry",
           "when": "view == acp-sessions"
-        },
-        {
-          "command": "acp.newConversation",
-          "when": "view == acp-chat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "acp.attachFile",
-          "when": "view == acp-chat",
-          "group": "navigation@2"
-        },
-        {
-          "command": "acp.cancelTurn",
-          "when": "view == acp-chat && acp.turnInProgress",
-          "group": "navigation@3"
-        },
-        {
-          "command": "acp.disconnectAgent",
-          "when": "view == acp-chat",
-          "group": "navigation@4"
-        },
-        {
-          "command": "acp.showLog",
-          "when": "view == acp-chat"
-        },
-        {
-          "command": "acp.showTraffic",
-          "when": "view == acp-chat"
-        },
-        {
-          "command": "acp.restartAgent",
-          "when": "view == acp-chat"
         }
       ],
       "view/item/context": [
@@ -379,21 +391,6 @@
         {
           "command": "acp.restartAgent",
           "when": "view == acp-sessions && viewItem == agent-connected"
-        },
-        {
-          "command": "acp.refreshSessions",
-          "when": "view == acp-sessions && viewItem =~ /^agent/",
-          "group": "session@1"
-        },
-        {
-          "command": "acp.copySessionId",
-          "when": "view == acp-sessions && viewItem =~ /^session/",
-          "group": "session@1"
-        },
-        {
-          "command": "acp.forgetSession",
-          "when": "view == acp-sessions && viewItem == session-local",
-          "group": "session@2"
         }
       ]
     },
@@ -402,11 +399,6 @@
         "command": "acp.openChat",
         "key": "ctrl+shift+a",
         "mac": "cmd+shift+a"
-      },
-      {
-        "command": "acp.cancelTurn",
-        "key": "escape",
-        "when": "acp.turnInProgress"
       }
     ],
     "configuration": {

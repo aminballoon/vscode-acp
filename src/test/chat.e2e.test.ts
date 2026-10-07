@@ -23,9 +23,9 @@ function recordingStream(parts: Part[]): vscode.ChatResponseStream {
 }
 
 /** Send a prompt in an ACP chat session with the given agent picked (auto-approve). */
-function askChat(api: AcpExtensionApi, chat: string, prompt: string, agent: string) {
+function askChat(api: AcpExtensionApi, chat: string, prompt: string, agent: string, command?: string) {
   return api.acpSessionHandler(
-    { prompt } as unknown as vscode.ChatRequest,
+    { prompt, command } as unknown as vscode.ChatRequest,
     {
       history: [],
       chatSessionContext: {
@@ -139,6 +139,29 @@ suite('Chat participant e2e (fake agent)', function () {
     assert.strictEqual(api.changeTracker.size, 0, 'nothing pending in the fallback tracker');
   });
 
+  test('edit reported after it was written (Codex): native diff from the pre-turn content', async () => {
+    const parts: Part[] = [];
+    const seen: Array<{ before: string; after: string }> = [];
+    const stream = Object.assign(recordingStream(parts), {
+      textEdit: () => undefined,
+      workspaceEdit: () => undefined,
+      externalEdit: async (uris: vscode.Uri[], callback: () => Thenable<unknown>) => {
+        const before = fs.readFileSync(uris[0].fsPath, 'utf8');
+        await callback();
+        seen.push({ before, after: fs.readFileSync(uris[0].fsPath, 'utf8') });
+      },
+    });
+    await api.chatHandler(
+      { prompt: `late-edit ${target}` } as unknown as vscode.ChatRequest,
+      { history: [] } as unknown as vscode.ChatContext,
+      stream, new vscode.CancellationTokenSource().token,
+    );
+    // The tool call's own externalEdit comes too late to see a change; the replay does
+    assert.ok(seen.some(s => s.before === ORIGINAL && s.after.includes('sleep(10)')), `native edit with a real diff: ${JSON.stringify(seen)}`);
+    assert.ok(fs.readFileSync(target, 'utf8').includes('sleep(10)'), 'agent result stays on disk');
+    assert.strictEqual(api.changeTracker.size, 0);
+  });
+
   test('rejected edit: file untouched, no diff card, nothing pending', async () => {
     const parts = await runTurn(api, target, 'reject');
     assert.strictEqual(fs.readFileSync(target, 'utf8'), ORIGINAL);
@@ -223,6 +246,57 @@ suite('Chat participant e2e (fake agent)', function () {
     assert.ok(api.connectedAgents().includes('Fake Agent'), 'next message reconnects');
     assert.strictEqual(chat.acpSessionId, before, 'the chat resumed its own agent session');
     assert.ok(chat.turns.at(-1)?.response, 'resumed session answered');
+  });
+
+  test('ACP chats: slash commands reach the agent as typed', async () => {
+    const id = `chat-command-${Date.now()}`;
+    await askChat(api, id, 'now please', 'Fake Agent', 'compact');
+    const chat = api.acpChats().find(c => c.id === id)!;
+    assert.strictEqual(chat.turns[0].response, 'Command: /compact now please');
+  });
+
+  test('ACP chats: agent sessions outside ACP chats are listed and their history loads', async () => {
+    // An @acp turn on a freshly connected agent: a session that no ACP chat owns
+    await addFakeAgent('Fake Agent 3');
+    await vscode.commands.executeCommand('acp.connectAgent', 'Fake Agent 3');
+    const parts: Part[] = [];
+    await api.chatHandler(
+      { prompt: 'hello from @acp' } as unknown as vscode.ChatRequest,
+      { history: [] } as unknown as vscode.ChatContext,
+      recordingStream(parts), new vscode.CancellationTokenSource().token,
+    );
+    const listed = (await api.listAcpChats()).find(c => c.imported && c.label === 'hello from @acp');
+    assert.ok(listed, 'the session is listed');
+    assert.strictEqual(listed.agentName, 'Fake Agent 3');
+
+    await api.disconnectIdleAgents(0); // as after a restart: the session must be loaded again
+    const opened = await api.openAcpChat(listed.id);
+    assert.deepStrictEqual(opened?.turns.map(t => [t.prompt, t.response]), [['earlier question', 'earlier answer']]);
+    assert.strictEqual(opened?.imported, false, 'now a regular saved chat');
+  });
+
+  test('agent status: account, context, cost and tokens the agent reported', async () => {
+    const id = `chat-status-${Date.now()}`;
+    await askChat(api, id, 'status please', 'Fake Agent', 'status');
+    const s = api.agentStatus('Fake Agent');
+    assert.deepStrictEqual(s?.account, { label: 'Fake Pro', email: 'dev@example.com', plan: 'pro' });
+    assert.deepStrictEqual(s?.context, { used: 12000, size: 200000 });
+    assert.ok(s?.cost && s.cost.amount >= 0.25 && s.cost.currency === 'USD', 'cost summed over sessions');
+    assert.ok(s && s.tokens >= 1500 && s.turns >= 1, 'tokens of prompt responses');
+    const fiveHour = s?.limits?.['5-hour limit'];
+    assert.ok(fiveHour, 'rate limit event forwarded because the session asked for it (_meta)');
+    assert.strictEqual(Math.round(fiveHour.usedPercent), 42);
+    assert.ok(fiveHour.resetsAt && fiveHour.resetsAt > Date.now(), 'reset time in epoch ms');
+  });
+
+  test('Pending Changes only covers files in the open workspace', async () => {
+    const outside = '/tmp/acp-outside-workspace.txt';
+    await api.changeTracker.noteTurnChange(outside, 'before');
+    await api.changeTracker.noteTurnChange(target, ORIGINAL);
+    await vscode.commands.executeCommand('acp.changes.keepAll');
+    assert.ok(!api.changeTracker.get(target), 'workspace file kept');
+    assert.ok(api.changeTracker.get(outside), 'file outside the workspace untouched');
+    await api.changeTracker.keep(outside);
   });
 
   test('keep clears the pending entry and leaves the agent result', async () => {

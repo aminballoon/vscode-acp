@@ -21,7 +21,7 @@ suite('Extension Test Suite', () => {
 		const acpCommands = commands.filter(c => c.startsWith('acp.'));
 		assert.ok(acpCommands.length > 0, 'ACP commands should be registered');
 		assert.ok(acpCommands.includes('acp.connectAgent'), 'connectAgent command should exist');
-		assert.ok(acpCommands.includes('acp.newConversation'), 'newConversation command should exist');
+		assert.ok(!acpCommands.includes('acp.newConversation'), 'the sidebar chat webview and its commands are gone');
 		assert.ok(acpCommands.includes('acp.openChat'), 'openChat command should exist');
 	});
 

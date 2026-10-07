@@ -13,9 +13,10 @@ import { registerChatParticipant } from './chat/AcpChatParticipant';
 import { registerAcpChatSessions } from './chat/AcpChatSessions';
 import type { StoredChat } from './chat/AcpChatStore';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
-import { SessionTreeProvider } from './ui/SessionTreeProvider';
+import { AgentTreeProvider } from './ui/AgentTreeProvider';
+import { AgentStatusInfo, AgentStatusStore } from './core/AgentStatus';
+import { readCodexRateLimits } from './core/CodexRateLimits';
 import { StatusBarManager } from './ui/StatusBarManager';
-import { ChatWebviewProvider } from './ui/ChatWebviewProvider';
 import { getAgentNames } from './config/AgentConfig';
 import { fetchRegistry } from './config/RegistryClient';
 import { log, logError, disposeChannels, getOutputChannel, getTrafficChannel } from './utils/Logger';
@@ -36,6 +37,12 @@ export interface AcpExtensionApi {
   connectedAgents(): string[];
   /** Disconnect ACP chat agents idle for `maxIdleMs` (what the idle timer does). */
   disconnectIdleAgents(maxIdleMs: number): Promise<string[]>;
+  /** Account and usage an agent reported. */
+  agentStatus(agentName: string): AgentStatusInfo | undefined;
+  /** What the chat sessions list shows, including agent sessions not owned by a chat. */
+  listAcpChats(): Promise<StoredChat[]>;
+  /** Open a listed chat (loads an imported agent session's history). */
+  openAcpChat(id: string): Promise<StoredChat | undefined>;
 }
 
 export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
@@ -56,9 +63,8 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   const connectionManager = new ConnectionManager(sessionUpdateHandler, {
     changeTracker,
     turnRouter,
-    // Native chat turns take precedence; the sidebar webview is the fallback
-    permissionPrompter: async (params): Promise<string | undefined> =>
-      (await turnRouter.requestPermission(params)) ?? chatWebviewProvider.requestPermission(params),
+    // In a chat turn: native confirmation; otherwise PermissionHandler falls back to a QuickPick
+    permissionPrompter: params => turnRouter.requestPermission(params),
   });
   const sessionManager = new SessionManager(
     agentManager,
@@ -66,30 +72,41 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     sessionUpdateHandler,
   );
 
-  // Persistent client-side session-history cache (used as the tier-2 tree
-  // source for agents that support session/load or session/resume but not
-  // session/list).
+  // Agent sessions created in this workspace, listed in the chat sessions view
+  // for agents that cannot list their sessions themselves (session/list)
   const historyStore = new SessionHistoryStore(context.workspaceState);
   sessionManager.setHistoryStore(historyStore);
   context.subscriptions.push({ dispose: () => historyStore.dispose() });
 
-  // --- UI ---
-  const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const sessionTreeProvider = new SessionTreeProvider(sessionManager, historyStore, workspaceCwd);
-  const treeView = vscode.window.createTreeView('acp-sessions', {
-    treeDataProvider: sessionTreeProvider,
+  // What agents report about their account and usage, shown in the Agents view
+  const agentStatus = new AgentStatusStore();
+  connectionManager.onExtNotification = (agentId, method, params) => {
+    const name = agentManager.getAgent(agentId)?.name;
+    if (name) { agentStatus.noteExtNotification(name, method, params); }
+  };
+  // Codex keeps its rate limits in its own session files, not in ACP messages
+  const isCodex = (name: string) => /codex/i.test(sessionManager.getAgentSession(name)?.initResponse.agentInfo?.name ?? name);
+  const refreshCodexLimits = (name: string, sessionId?: string) => {
+    if (!isCodex(name)) { return; }
+    void readCodexRateLimits(sessionId).then(limits => { if (limits) { agentStatus.noteLimits(name, limits); } });
+  };
+  sessionManager.on('agent-connected', (name: string) => {
+    agentStatus.noteConnected(name, sessionManager.getAgentSession(name)?.initResponse.agentInfo ?? undefined);
+    refreshCodexLimits(name);
+  });
+  sessionManager.on('agent-disconnected', (name: string) => agentStatus.noteDisconnected(name));
+  sessionManager.on('prompt-response', (name: string, response, sessionId: string) => {
+    agentStatus.notePromptResponse(name, response);
+    refreshCodexLimits(name, sessionId);
+  });
+  sessionUpdateHandler.addListener(n => {
+    const name = sessionManager.getSession(n.sessionId)?.agentName;
+    if (name) { agentStatus.noteSessionUpdate(name, n); }
   });
 
-  const chatWebviewProvider = new ChatWebviewProvider(
-    context.extensionUri,
-    sessionManager,
-    sessionUpdateHandler,
-  );
-  const chatViewRegistration = vscode.window.registerWebviewViewProvider(
-    ChatWebviewProvider.viewType,
-    chatWebviewProvider,
-    { webviewOptions: { retainContextWhenHidden: true } },
-  );
+  // --- UI ---
+  const agentTreeProvider = new AgentTreeProvider(sessionManager, agentStatus);
+  const treeView = vscode.window.createTreeView('acp-sessions', { treeDataProvider: agentTreeProvider });
 
   const chatParticipant = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker);
   // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input
@@ -97,74 +114,8 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
-  // Notify chat webview when active session changes
-  sessionManager.on('active-session-changed', () => {
-    chatWebviewProvider.notifyActiveSessionChanged();
-  });
-
-  // Clear chat when new conversation is started
-  sessionManager.on('clear-chat', () => {
-    chatWebviewProvider.clearChat();
-  });
-
-  // Forward mode/model changes to webview
-  sessionManager.on('mode-changed', (_sessionId: string, _modeId: string) => {
-    const session = sessionManager.getActiveSession();
-    if (session?.modes) {
-      chatWebviewProvider.notifyModesUpdate(session.modes);
-    }
-  });
-
-  sessionManager.on('model-changed', (_sessionId: string, _modelId: string) => {
-    const session = sessionManager.getActiveSession();
-    if (session?.models) {
-      chatWebviewProvider.notifyModelsUpdate(session.models);
-    }
-  });
-
-  // Session-load replay state — drive the webview overlay.
-  sessionManager.on('session-load-start', () => {
-    chatWebviewProvider.notifyLoadSessionStart();
-  });
-  sessionManager.on('session-load-end', (_sessionId: string, _agentName: string, ok: boolean) => {
-    chatWebviewProvider.notifyLoadSessionEnd(ok);
-    if (ok) {
-      // The loadSession response carries modes/models/configOptions for the
-      // restored session. Re-send the state so the pickers pick them up
-      // (the original `active-session-changed` was emitted before the RPC
-      // resolved, when those fields were still null).
-      chatWebviewProvider.notifyActiveSessionChanged();
-    }
-  });
-
-  // Session metadata (title) update — forward to chat banner.
-  sessionManager.on('session-info-changed', (sessionId: string, update: any) => {
-    if (sessionId !== sessionManager.getActiveSessionId()) { return; }
-    chatWebviewProvider.notifySessionInfoUpdate(update?.title);
-  });
-
   // --- Pending changes (Keep / Undo) ---
   registerChangesView(context, changeTracker, fileIO);
-
-  // Outside @acp chat turns (sidebar webview), agents that write files
-  // themselves report diffs via tool_call content. A chat turn tracks its own
-  // edits, and replayed history must not create pending changes.
-  let replaying = false;
-  sessionManager.on('session-load-start', () => { replaying = true; });
-  sessionManager.on('session-load-end', () => { replaying = false; });
-  sessionUpdateHandler.addListener(({ sessionId, update }) => {
-    if (update.sessionUpdate !== 'tool_call' && update.sessionUpdate !== 'tool_call_update') { return; }
-    if (replaying || turnRouter.get(sessionId)) { return; }
-    for (const c of update.content ?? []) {
-      if (c.type === 'diff') {
-        void changeTracker.noteExternalDiff(vscode.Uri.file(c.path).fsPath, c.oldText, c.newText)
-          .catch(e => logError('noteExternalDiff failed', e));
-      }
-    }
-    if (update.status === 'failed' || update.status === 'completed') {
-      void changeTracker.prune().catch(e => logError('prune failed', e));
-    }
-  });
 
   // --- Commands ---
 
@@ -193,18 +144,6 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
       if (!agentName) { return; }
     }
 
-    // If switching agents and there's chat content, confirm
-    const currentAgent = sessionManager.getActiveAgentName();
-    if (currentAgent && currentAgent !== agentName && chatWebviewProvider.hasChatContent) {
-      const choice = await vscode.window.showWarningMessage(
-        `Switch to ${agentName}? This will disconnect ${currentAgent} and clear the chat history.`,
-        'Switch Agent',
-        'Cancel',
-      );
-      if (choice !== 'Switch Agent') { return; }
-      chatWebviewProvider.clearChat();
-    }
-
     try {
       await vscode.window.withProgress(
         {
@@ -213,48 +152,12 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
           cancellable: false,
         },
         async () => {
-          await sessionManager.connectToAgent(agentName!);
+          await sessionManager.connectToAgent(agentName!, { exclusive: false });
         },
       );
     } catch (e: any) {
       logError('Failed to connect to agent', e);
       vscode.window.showErrorMessage(`Failed to connect: ${e.message}`);
-    }
-  });
-
-  // New Conversation (disconnect + clear chat + reconnect same agent)
-  const newConversationCmd = vscode.commands.registerCommand('acp.newConversation', async () => {
-    const activeSession = sessionManager.getActiveSession();
-    if (!activeSession) {
-      // No active agent — fall back to connect
-      await vscode.commands.executeCommand('acp.connectAgent');
-      return;
-    }
-
-    // Confirm if there's existing chat content
-    if (chatWebviewProvider.hasChatContent) {
-      const choice = await vscode.window.showWarningMessage(
-        'Start a new conversation? This will clear the current chat history.',
-        'New Conversation',
-        'Cancel',
-      );
-      if (choice !== 'New Conversation') { return; }
-    }
-
-    try {
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Starting new conversation with ${activeSession.agentDisplayName}...`,
-          cancellable: false,
-        },
-        async () => {
-          await sessionManager.newConversation();
-        },
-      );
-    } catch (e: any) {
-      logError('Failed to start new conversation', e);
-      vscode.window.showErrorMessage(`Failed to start new conversation: ${e.message}`);
     }
   });
 
@@ -269,31 +172,16 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     vscode.window.showInformationMessage(`Disconnected from ${agentName}.`);
   });
 
-  // Open Chat
-  const openChatCmd = vscode.commands.registerCommand('acp.openChat', () => {
-    vscode.commands.executeCommand('acp-chat.focus');
-  });
-
-  // Send Prompt (from keybinding — just focus chat)
-  const sendPromptCmd = vscode.commands.registerCommand('acp.sendPrompt', async () => {
-    vscode.commands.executeCommand('acp-chat.focus');
-  });
-
-  // Cancel Turn
-  const cancelTurnCmd = vscode.commands.registerCommand('acp.cancelTurn', async () => {
-    const activeId = sessionManager.getActiveSessionId();
-    if (activeId) {
-      try {
-        await sessionManager.cancelTurn(activeId);
-      } catch (e) {
-        logError('Cancel failed', e);
-      }
-    }
+  // Open a new ACP chat in the Chat view, optionally with an agent preselected
+  const openChatCmd = vscode.commands.registerCommand('acp.openChat', async (arg?: string | { agentName?: string }) => {
+    const agentName = typeof arg === 'string' ? arg : arg?.agentName;
+    if (agentName) { acpSessions.preferAgent(agentName); }
+    await vscode.commands.executeCommand('workbench.action.chat.openNewChatSessionInPlace.acp', 'sidebar');
   });
 
   // Restart Agent
-  const restartAgentCmd = vscode.commands.registerCommand('acp.restartAgent', async () => {
-    const activeSession = sessionManager.getActiveSession();
+  const restartAgentCmd = vscode.commands.registerCommand('acp.restartAgent', async (item?: { agentName?: string }) => {
+    const activeSession = item?.agentName ? sessionManager.getAgentSession(item.agentName) : sessionManager.getActiveSession();
     if (!activeSession) { return; }
 
     const agentName = activeSession.agentName;
@@ -306,7 +194,7 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
         },
         async () => {
           await sessionManager.disconnectAgent(agentName);
-          await sessionManager.connectToAgent(agentName);
+          await sessionManager.connectToAgent(agentName, { exclusive: false });
         },
       );
       vscode.window.showInformationMessage(`Restarted ${agentName}`);
@@ -327,133 +215,9 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     getTrafficChannel().show();
   });
 
-  // Set Mode
-  const setModeCmd = vscode.commands.registerCommand('acp.setMode', async (modeId?: string) => {
-    const activeId = sessionManager.getActiveSessionId();
-    if (!activeId) { return; }
-
-    if (!modeId) {
-      modeId = await vscode.window.showInputBox({
-        placeHolder: 'Enter mode ID (e.g., "plan", "code")',
-        title: 'Set Agent Mode',
-      }) || undefined;
-    }
-    if (modeId) {
-      try {
-        await sessionManager.setMode(activeId, modeId);
-      } catch (e: any) {
-        vscode.window.showErrorMessage(`Failed to set mode: ${e.message}`);
-      }
-    }
-  });
-
-  // Set Model
-  const setModelCmd = vscode.commands.registerCommand('acp.setModel', async (modelId?: string) => {
-    const activeId = sessionManager.getActiveSessionId();
-    if (!activeId) { return; }
-
-    if (!modelId) {
-      modelId = await vscode.window.showInputBox({
-        placeHolder: 'Enter model ID',
-        title: 'Set Agent Model',
-      }) || undefined;
-    }
-    if (modelId) {
-      try {
-        await sessionManager.setModel(activeId, modelId);
-      } catch (e: any) {
-        vscode.window.showErrorMessage(`Failed to set model: ${e.message}`);
-      }
-    }
-  });
-
   // Refresh Agents tree
   const refreshAgentsCmd = vscode.commands.registerCommand('acp.refreshAgents', () => {
-    sessionTreeProvider.refresh();
-  });
-
-  // Refresh sessions for an agent (or all agents). Invalidates the cached
-  // session-list state so the next expansion re-runs `session/list`.
-  const refreshSessionsCmd = vscode.commands.registerCommand('acp.refreshSessions', (arg?: any) => {
-    const agentName = typeof arg === 'string' ? arg : arg?.agentName;
-    sessionTreeProvider.invalidate(agentName);
-  });
-
-  // Open (load or resume) a previously-existing session.
-  const openSessionCmd = vscode.commands.registerCommand('acp.openSession', async (arg?: any) => {
-    const agentName: string | undefined = arg?.agentName;
-    const sessionId: string | undefined = arg?.sessionId;
-    if (!agentName || !sessionId) {
-      vscode.window.showErrorMessage('Open Session: missing agentName/sessionId.');
-      return;
-    }
-
-    // No-op if it is already the active session.
-    if (sessionManager.getActiveSessionId() === sessionId) {
-      vscode.commands.executeCommand('acp-chat.focus');
-      return;
-    }
-
-    // Confirm if there's existing chat content with a different active session.
-    if (chatWebviewProvider.hasChatContent) {
-      const choice = await vscode.window.showWarningMessage(
-        'Open a different session? This will replace the current chat history.',
-        'Open Session',
-        'Cancel',
-      );
-      if (choice !== 'Open Session') { return; }
-    }
-
-    try {
-      await vscode.commands.executeCommand('acp-chat.focus');
-      // Decide load vs resume based on capabilities. Prefer load (replays
-      // history) for the richer experience.
-      const caps = sessionManager.getCachedCapabilities(agentName);
-      if (caps?.load) {
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Loading session…`,
-            cancellable: false,
-          },
-          async () => {
-            await sessionManager.loadSession(agentName, sessionId);
-          },
-        );
-      } else if (caps?.resume) {
-        await sessionManager.resumeSession(agentName, sessionId);
-        vscode.window.showInformationMessage('Resumed session (history not replayed).');
-      } else {
-        vscode.window.showErrorMessage(
-          `Agent "${agentName}" does not support loading or resuming sessions.`,
-        );
-      }
-    } catch (e: any) {
-      logError('Failed to open session', e);
-      vscode.window.showErrorMessage(`Failed to open session: ${e.message}`);
-    }
-  });
-
-  // Pagination cursor: append the next page to the agent-sourced list.
-  const loadMoreSessionsCmd = vscode.commands.registerCommand('acp.loadMoreSessions', async (agentName?: string) => {
-    if (!agentName) { return; }
-    await sessionTreeProvider.loadMore(agentName);
-  });
-
-  // Copy session ID to clipboard (right-click on a session tree item).
-  const copySessionIdCmd = vscode.commands.registerCommand('acp.copySessionId', async (arg?: any) => {
-    const sessionId = arg?.sessionId;
-    if (!sessionId) { return; }
-    await vscode.env.clipboard.writeText(sessionId);
-    vscode.window.showInformationMessage(`Copied session ID: ${sessionId}`);
-  });
-
-  // Forget a single locally-cached session (right-click on a local session).
-  const forgetSessionCmd = vscode.commands.registerCommand('acp.forgetSession', async (arg?: any) => {
-    const agentName = arg?.agentName;
-    const sessionId = arg?.sessionId;
-    if (!agentName || !sessionId) { return; }
-    historyStore.forget(agentName, sessionId);
+    agentTreeProvider.refresh();
   });
 
   // Add Agent Configuration
@@ -483,7 +247,7 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     const agents: Record<string, any> = { ...(config.get<Record<string, any>>('agents') || {}) };
     agents[name] = { command, args };
     await config.update('agents', agents, vscode.ConfigurationTarget.Global);
-    sessionTreeProvider.refresh();
+    agentTreeProvider.refresh();
     vscode.window.showInformationMessage(`Agent "${name}" added.`);
     sendEvent('agent/added');
   });
@@ -516,21 +280,9 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
 
     delete agents[name];
     await config.update('agents', agents, vscode.ConfigurationTarget.Global);
-    sessionTreeProvider.refresh();
+    agentTreeProvider.refresh();
     vscode.window.showInformationMessage(`Agent "${name}" removed.`);
     sendEvent('agent/removed', { agentName: name });
-  });
-
-  // Attach File
-  const attachFileCmd = vscode.commands.registerCommand('acp.attachFile', async () => {
-    const uris = await vscode.window.showOpenDialog({
-      canSelectMany: false,
-      openLabel: 'Attach',
-      title: 'Attach File to Chat',
-    });
-    if (uris && uris.length > 0) {
-      chatWebviewProvider.attachFile(uris[0]);
-    }
   });
 
   // Browse Registry
@@ -559,35 +311,22 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   // --- Register disposables ---
   context.subscriptions.push(
     treeView,
-    chatViewRegistration,
     statusBarManager,
     connectAgentCmd,
-    newConversationCmd,
     disconnectAgentCmd,
     openChatCmd,
-    sendPromptCmd,
-    cancelTurnCmd,
     restartAgentCmd,
     showLogCmd,
     showTrafficCmd,
-    setModeCmd,
-    setModelCmd,
     refreshAgentsCmd,
-    refreshSessionsCmd,
-    openSessionCmd,
-    loadMoreSessionsCmd,
-    copySessionIdCmd,
-    forgetSessionCmd,
     addAgentCmd,
     removeAgentCmd,
-    attachFileCmd,
     browseRegistryCmd,
     {
       dispose: () => {
         sessionManager.dispose();
         sessionUpdateHandler.dispose();
-        chatWebviewProvider.dispose();
-        sessionTreeProvider.dispose();
+        agentTreeProvider.dispose();
         disposeChannels();
       },
     },
@@ -603,6 +342,9 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     acpChats: () => acpSessions.store.list(),
     connectedAgents: () => sessionManager.getConnectedAgentNames(),
     disconnectIdleAgents: ms => acpSessions.disconnectIdleAgents(ms),
+    listAcpChats: () => acpSessions.listChats(),
+    agentStatus: name => agentStatus.get(name),
+    openAcpChat: id => acpSessions.openChat(id),
     activeConfigOptions: () => sessionManager.getActiveSession()?.configOptions ?? null,
   };
 }

@@ -12,9 +12,18 @@ import * as acp from '../node_modules/@agentclientprotocol/sdk/dist/acp.js';
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 class FakeAgent {
-  constructor(conn) { this.conn = conn; this.cwds = new Map(); }
+  constructor(conn) { this.conn = conn; this.cwds = new Map(); this.rawSdk = new Set(); }
   async initialize() {
-    return { protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: false, sessionCapabilities: { resume: {} } } };
+    return { protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
+  }
+  // Any session id loads, replaying a fixed exchange (a real agent reads its saved history)
+  async loadSession(params) {
+    this.cwds.set(params.sessionId, params.cwd || process.cwd());
+    this.config ??= { model: 'fake-smart', effort: 'medium' };
+    const send = update => this.conn.sessionUpdate({ sessionId: params.sessionId, update });
+    await send({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'earlier question' } });
+    await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'earlier answer' } });
+    return { configOptions: this.configOptions() };
   }
   // Any session id resumes (a real agent reads its saved history from disk)
   async resumeSession(params) {
@@ -25,7 +34,13 @@ class FakeAgent {
   async newSession(params) {
     const sessionId = 'fake-' + Date.now();
     this.cwds.set(sessionId, params.cwd || process.cwd());
+    // Like claude-agent-acp: raw SDK messages only when the client asks for them
+    if (params._meta?.claudeCode?.emitRawSDKMessages) { this.rawSdk.add(sessionId); }
     this.config = { model: 'fake-smart', effort: 'medium' };
+    // Like codex-acp: account and plan as an agent extension notification
+    await this.conn.extNotification('_auth/status_update', {
+      authStatus: { kind: 'account', label: 'Fake Pro', account: { email: 'dev@example.com', plan: 'pro' } },
+    });
     return { sessionId, configOptions: this.configOptions() };
   }
   // Session Config Options, so the chat pickers have a model and effort to show
@@ -49,12 +64,34 @@ class FakeAgent {
     const name = (text.match(/(\S+\.\w+)/) || [])[1];
     const path = name && nodePath.resolve(this.cwds.get(sessionId) || process.cwd(), name);
     const send = update => this.conn.sessionUpdate({ sessionId, update });
+    await send({ sessionUpdate: 'usage_update', used: 12000, size: 200000, cost: { amount: 0.25, currency: 'USD' } });
+    if (this.rawSdk.has(sessionId)) {
+      await this.conn.extNotification('_claude/sdkMessage', { sessionId, message: {
+        type: 'rate_limit_event', session_id: sessionId, uuid: 'u1',
+        rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.42, resetsAt: Math.floor(Date.now() / 1000) + 3600 },
+      } });
+    }
+    if (text.startsWith('/')) {
+      await send({ sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'compact', description: 'Compact' }] });
+      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Command: ${text}` } });
+      return { stopReason: 'end_turn', usage: { totalTokens: 1500, inputTokens: 1000, outputTokens: 500 } };
+    }
     if (!path || !fs.existsSync(path)) {
       await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'No path given.' } });
       return { stopReason: 'end_turn' };
     }
     const oldText = fs.readFileSync(path, 'utf8');
     const newText = oldText.includes('sleep(2)') ? oldText.replace('sleep(2)', 'sleep(10)') : oldText + '# edited\n';
+
+    // Like Codex: the patch is already applied when the edit tool call arrives
+    if (text.startsWith('late-edit')) {
+      fs.writeFileSync(path, newText);
+      await send({ sessionUpdate: 'tool_call', toolCallId: 'l1', title: 'Editing files', kind: 'edit', status: 'in_progress',
+        content: [{ type: 'diff', path, oldText: 'sleep(2)', newText: 'sleep(10)' }] });
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'l1', status: 'completed' });
+      await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Patched.' } });
+      return { stopReason: 'end_turn' };
+    }
 
     // Like an agent running `sed -i` in its terminal tool: no paths, no diff
     if (text.startsWith('shell-edit')) {

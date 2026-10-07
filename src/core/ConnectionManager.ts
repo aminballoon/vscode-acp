@@ -26,6 +26,8 @@ export interface ConnectionInfo {
  */
 export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
+  /** Agent-specific notifications, by agent process id. */
+  onExtNotification?: (agentId: string, method: string, params: Record<string, unknown>) => void;
 
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
@@ -67,6 +69,7 @@ export class ConnectionManager {
       terminalHandler,
       permissionHandler,
       this.sessionUpdateHandler,
+      (method, params) => this.onExtNotification?.(agentId, method, params),
     );
 
     // Create connection — toClient factory receives the Agent proxy

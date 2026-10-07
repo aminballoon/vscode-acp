@@ -41,7 +41,13 @@ export class AcpClientImpl implements Client {
     private readonly terminalHandler: TerminalHandler,
     private readonly permissionHandler: PermissionHandler,
     private readonly sessionUpdateHandler: SessionUpdateHandler,
+    private readonly onExtNotification?: (method: string, params: Record<string, unknown>) => void,
   ) {}
+
+  /** Agent-specific notifications (e.g. codex-acp's `_auth/status_update`). */
+  async extNotification(method: string, params: Record<string, unknown>): Promise<void> {
+    this.onExtNotification?.(method, params);
+  }
 
   setAgent(agent: Agent): void {
     this.agent = agent;

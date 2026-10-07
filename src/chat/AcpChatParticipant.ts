@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs/promises';
 import * as nodePath from 'node:path';
 
 import type { SessionManager } from '../core/SessionManager';
@@ -124,8 +125,10 @@ export function registerChatParticipant(
     const savedSub = vscode.workspace.onDidSaveTextDocument(d => state.savedByUser.add(d.uri.fsPath));
 
     try {
-      sessionManager.recordFirstPrompt(sessionId, request.prompt);
-      const res = await sessionManager.sendPrompt(sessionId, request.prompt);
+      // Slash commands picked in the chat input go to the agent as typed (`/compact ...`)
+      const prompt = request.command ? `/${request.command} ${request.prompt}`.trim() : request.prompt;
+      sessionManager.recordFirstPrompt(sessionId, prompt);
+      const res = await sessionManager.sendPrompt(sessionId, prompt);
       sessionManager.touchHistory(sessionId);
       if (res.stopReason === 'refusal') { stream.markdown('\n\n_The agent refused this request._'); }
     } catch (e: any) {
@@ -243,12 +246,18 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
   const paths = st.editPaths.get(toolCallId);
   if (!paths?.size) { return; }
   st.editPaths.delete(toolCallId);
-  paths.forEach(p => st.reportedPaths.add(p));
   st.work.push((async () => {
+    // A file only counts as shown if it changed after our snapshot. Agents that
+    // report an edit after writing it (e.g. Codex) leave it unchanged here; the
+    // end-of-turn workspace comparison then shows it from the real pre-turn content.
     if (await st.externalResults.get(toolCallId)) {
+      for (const p of paths) {
+        const entry = tracker.get(p);
+        if (entry && await readDisk(p) !== entry.baseline) { st.reportedPaths.add(p); }
+      }
       await Promise.all([...paths].map(p => tracker.keep(p)));
     } else {
-      await reportEdits([...paths], st.turn.stream, tracker);
+      (await reportEdits([...paths], st.turn.stream, tracker)).forEach(p => st.reportedPaths.add(p));
     }
   })().catch(e => logError('finishToolEdits failed', e)));
 }
@@ -256,7 +265,8 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
 /** Show files the turn changed that no edit tool call reported. */
 async function reportUntrackedEdits(snapshot: WorkspaceSnapshot, st: TurnState, tracker: ChangeTracker): Promise<void> {
   const { turn } = st;
-  const skip = (p: string) => st.reportedPaths.has(p) || turn.externalPaths.has(p) || turn.written.has(p) || st.savedByUser.has(p);
+  // Files wrapped in externalEdit are judged by reportedPaths: a late snapshot shows nothing
+  const skip = (p: string) => st.reportedPaths.has(p) || turn.written.has(p) || st.savedByUser.has(p);
   const changes = (await snapshot.changes())
     .map(c => ({ ...c, path: vscode.Uri.file(c.path).fsPath }))
     .filter(c => !skip(c.path));
@@ -317,7 +327,16 @@ function documentShows(path: string, text: string, timeoutMs = 3000): Promise<vo
 }
 
 /** Compare against baseline, then show the diff and Keep/Undo in the response. */
-async function reportEdits(paths: string[], stream: vscode.ChatResponseStream, tracker: ChangeTracker): Promise<void> {
+async function readDisk(path: string): Promise<string | null> {
+  try {
+    return await fs.readFile(path, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Returns the paths shown (those that changed). */
+async function reportEdits(paths: string[], stream: vscode.ChatResponseStream, tracker: ChangeTracker): Promise<string[]> {
   const pending = await Promise.all(paths.map(p => tracker.noteAgentResult(p)));
   const changed = paths.filter((_, i) => pending[i]);
   log(`edit result: ${changed.length ? changed.join(', ') : 'no changes'}`);
@@ -331,7 +350,7 @@ async function reportEdits(paths: string[], stream: vscode.ChatResponseStream, t
       ...countLineChanges(entry.baseline ?? '', entry.agentText),
     }];
   });
-  if (!entries.length) { return; }
+  if (!entries.length) { return []; }
 
   pushDiffs(stream, 'Agent changes', entries);
   for (const p of changed) {
@@ -340,4 +359,5 @@ async function reportEdits(paths: string[], stream: vscode.ChatResponseStream, t
     stream.button({ title: `Undo ${name}`, command: 'acp.changes.undo', arguments: [{ path: p }] });
     stream.button({ title: 'Open diff', command: 'acp.changes.openDiff', arguments: [{ path: p }] });
   }
+  return changed;
 }

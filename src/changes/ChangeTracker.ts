@@ -187,16 +187,18 @@ export class ChangeTracker {
     });
   }
 
-  async keepAll(): Promise<void> {
-    if (!this.entries.size) { return; }
-    this.entries.clear();
+  /** Keep every pending change, or only those whose path passes `filter`. */
+  async keepAll(filter: (path: string) => boolean = () => true): Promise<void> {
+    const paths = [...this.entries.keys()].filter(filter);
+    if (!paths.length) { return; }
+    paths.forEach(p => this.entries.delete(p));
     await this.persist();
   }
 
   /** Returns paths that were skipped because the user edited them. */
-  async undoAll(force = false): Promise<string[]> {
+  async undoAll(force = false, filter: (path: string) => boolean = () => true): Promise<string[]> {
     const skipped: string[] = [];
-    for (const path of [...this.entries.keys()]) {
+    for (const path of [...this.entries.keys()].filter(filter)) {
       const r = await this.undo(path, force);
       if (r.userEdited && !r.undone) { skipped.push(path); }
     }

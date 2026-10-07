@@ -19,6 +19,8 @@ export interface StoredChat {
   agentName?: string;
   /** ACP session of the agent, used to restore its context with session/load. */
   acpSessionId?: string;
+  /** An agent session found outside ACP chats (session/list or earlier use); history is loaded when opened. */
+  imported?: boolean;
   /** Picker selections (agent, model, effort, ...) by option group id. */
   selections: Record<string, string>;
   createdAt: number;

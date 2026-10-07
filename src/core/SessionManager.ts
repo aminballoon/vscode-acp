@@ -58,6 +58,13 @@ export interface AgentCapabilitySummary {
 /**
  * Why an agent expansion failed (used to surface a useful tree placeholder).
  */
+/**
+ * Sent with session/new, load and resume. claude-agent-acp then forwards the
+ * SDK's rate limit events (`_claude/sdkMessage`), shown in the Agents view;
+ * other agents ignore it.
+ */
+const SESSION_META = { claudeCode: { emitRawSDKMessages: [{ type: 'rate_limit_event' }] } };
+
 export interface ConnectOptions {
   /** Disconnect other agents first (single-agent sidebar model). Defaults to true. */
   exclusive?: boolean;
@@ -156,9 +163,8 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Connect to an agent and start chatting.
-   * By default only one agent is connected at a time (the sidebar webview
-   * model) and any previously connected agent is disconnected; pass
-   * `exclusive: false` to keep other agents connected (ACP chat sessions).
+   * With `exclusive` (the default) any other connected agent is disconnected
+   * first; pass `exclusive: false` to keep them connected (one per ACP chat).
    * Internally creates a session via ACP protocol.
    */
   async connectToAgent(agentName: string, options: ConnectOptions = {}): Promise<SessionInfo> {
@@ -315,22 +321,6 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Start a new conversation with the currently connected agent.
-   * Disconnects current session, reconnects, and signals chat to clear.
-   */
-  async newConversation(): Promise<SessionInfo | null> {
-    const activeSession = this.getActiveSession();
-    if (!activeSession) {
-      return null;
-    }
-
-    const agentName = activeSession.agentName;
-    await this.disconnectAgent(agentName);
-    this.emit('clear-chat');
-    return this.connectToAgent(agentName);
-  }
-
-  /**
    * Disconnect from an agent: kill process and clean up.
    */
   async disconnectAgent(agentName: string): Promise<void> {
@@ -374,6 +364,7 @@ export class SessionManager extends EventEmitter {
     let sessionResponse: NewSessionResponse;
     try {
       sessionResponse = await connInfo.connection.newSession({
+        _meta: SESSION_META,
         cwd,
         mcpServers: [],
       });
@@ -387,6 +378,7 @@ export class SessionManager extends EventEmitter {
       await this.runAuthFlow(agentName, agentId, connInfo);
       try {
         sessionResponse = await connInfo.connection.newSession({
+          _meta: SESSION_META,
           cwd,
           mcpServers: [],
         });
@@ -552,6 +544,7 @@ export class SessionManager extends EventEmitter {
     }
 
     log(`Prompt response: stopReason=${response.stopReason}`);
+    this.emit('prompt-response', agentName, response, sessionId);
     return response;
   }
 
@@ -886,20 +879,16 @@ export class SessionManager extends EventEmitter {
     this.sessions.set(sessionId, placeholder);
     this.drainPending(placeholder);
     this.loadingSessionIds.add(sessionId);
-    // Mark this session as active up front so handleSessionUpdate forwards
-    // the replayed chunks to the webview during the load. Without this,
-    // updates arrive before the activeSessionId is set and are dropped.
+    // Mark this session as active up front, before replayed chunks arrive.
     this.agentSessions.set(agentName, sessionId);
     this.activeSessionId = sessionId;
-    // Emit active-session-changed BEFORE session-load-start so the webview
-    // first repaints from the new session state, then immediately enters
-    // the loading-overlay state.
     this.emit('agent-connected', agentName);
     this.emit('active-session-changed', sessionId);
     this.emit('session-load-start', sessionId, agentName);
 
     try {
       const response = await conn.connection.loadSession({
+        _meta: SESSION_META,
         sessionId,
         cwd,
         mcpServers: [],
@@ -969,6 +958,7 @@ export class SessionManager extends EventEmitter {
     let response: any;
     try {
       response = await conn.connection.resumeSession({
+        _meta: SESSION_META,
         sessionId,
         cwd,
         mcpServers: [],

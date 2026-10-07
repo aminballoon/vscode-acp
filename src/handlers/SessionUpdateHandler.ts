@@ -6,7 +6,7 @@ export type SessionUpdateListener = (update: SessionNotification) => void;
 
 /**
  * Routes session/update notifications to registered listeners.
- * The ChatWebviewProvider registers as a listener to forward updates to the webview.
+ * The chat participant and the ACP chat sessions listen to render and record turns.
  */
 export class SessionUpdateHandler {
   private listeners: Set<SessionUpdateListener> = new Set();

@@ -33,20 +33,26 @@ class ChangeItem extends vscode.TreeItem {
   }
 }
 
+/** Whether a file belongs to the open workspace; changes elsewhere are not shown or bulk-resolved. */
+export function inWorkspace(path: string): boolean {
+  return !!vscode.workspace.getWorkspaceFolder(vscode.Uri.file(path));
+}
+
 export class ChangesTreeProvider implements vscode.TreeDataProvider<ChangeItem> {
   private readonly emitter = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.emitter.event;
   private readonly sub: { dispose(): void };
 
   constructor(private readonly tracker: ChangeTracker, private readonly io: { read(p: string): Promise<string | null> }) {
-    this.sub = tracker.onDidChange(() => this.emitter.fire());
+    const subs = [tracker.onDidChange(() => this.emitter.fire()), vscode.workspace.onDidChangeWorkspaceFolders(() => this.emitter.fire())];
+    this.sub = { dispose: () => subs.forEach(s => s.dispose()) };
   }
 
   getTreeItem(item: ChangeItem): vscode.TreeItem { return item; }
 
   getChildren(): Promise<ChangeItem[]> {
     // Counts reflect the current file, including the user's edits after the agent
-    return Promise.all(this.tracker.list().map(async ([path, entry]) => {
+    return Promise.all(this.tracker.list().filter(([path]) => inWorkspace(path)).map(async ([path, entry]) => {
       const current = (await this.io.read(path)) ?? '';
       const { added, removed } = countLineChanges(entry.baseline ?? '', current);
       return new ChangeItem(path, added, removed, entry.baseline === null);
@@ -65,9 +71,11 @@ export function registerChangesView(
   const tree = new ChangesTreeProvider(tracker, io);
   const treeView = vscode.window.createTreeView('acp-changes', { treeDataProvider: tree });
 
+  const pending = () => tracker.list().filter(([path]) => inWorkspace(path)).length;
   const syncBadge = () => {
-    treeView.badge = tracker.size ? { value: tracker.size, tooltip: `${tracker.size} pending file(s)` } : undefined;
-    void vscode.commands.executeCommand('setContext', 'acp.hasPendingChanges', tracker.size > 0);
+    const count = pending();
+    treeView.badge = count ? { value: count, tooltip: `${count} pending file(s)` } : undefined;
+    void vscode.commands.executeCommand('setContext', 'acp.hasPendingChanges', count > 0);
   };
   syncBadge();
 
@@ -81,6 +89,7 @@ export function registerChangesView(
     treeView, tree,
     vscode.workspace.registerTextDocumentContentProvider(BASELINE_SCHEME, provider),
     tracker.onDidChange(syncBadge),
+    vscode.workspace.onDidChangeWorkspaceFolders(syncBadge),
     reg('acp.changes.openDiff', async (arg?: any) => {
       const path = pathOf(arg);
       const entry = path && tracker.get(path);
@@ -109,13 +118,14 @@ export function registerChangesView(
         await tracker.undo(path, true);
       }
     }),
-    reg('acp.changes.keepAll', async () => { await tracker.keepAll(); }),
+    reg('acp.changes.keepAll', async () => { await tracker.keepAll(inWorkspace); }),
     reg('acp.changes.undoAll', async () => {
-      if (!tracker.size) { return; }
+      const count = pending();
+      if (!count) { return; }
       const ok = await vscode.window.showWarningMessage(
-        `Undo all ${tracker.size} pending file(s)?`, { modal: true }, 'Undo All');
+        `Undo all ${count} pending file(s)?`, { modal: true }, 'Undo All');
       if (ok !== 'Undo All') { return; }
-      const skipped = await tracker.undoAll();
+      const skipped = await tracker.undoAll(false, inWorkspace);
       if (skipped.length) {
         const choice = await vscode.window.showWarningMessage(
           `${skipped.length} file(s) were edited after the agent: ${skipped.map(p => nodePath.basename(p)).join(', ')}. Undo them anyway?`,

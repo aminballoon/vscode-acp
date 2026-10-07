@@ -20,12 +20,18 @@ Each agent runs as its own official CLI, so you use your existing subscription /
 
 ## Features
 
-- **`@acp` chat participant** in the native Chat view. It drives whichever agent is connected.
+- **"ACP" chat sessions** in the native Chat view: no `@acp` needed.
+  - Pickers under the input choose the agent, its model, effort and mode (or Ask / Auto-approve).
+  - Each chat keeps its own picks; several agents can run side by side.
+  - The agent's common slash commands (`/compact`, `/init`, `/review`, ...) are offered when the selected agent has them. Any other command can be typed and is sent as is.
+  - Sessions the agent already has (from `session/list`, or created in this workspace) show up in the chat sessions list; opening one loads its history.
+- **`@acp` chat participant** in any chat (e.g. Local). It drives the agent's active session.
   - Streams agent messages, thinking, tool calls and plans as native chat parts.
   - Cancel works the same as in Copilot.
 - **Copilot-style edit review.**
   - Agent edits become pending chat edits, whether the agent writes files through the client (`fs/write_text_file`) or on its own.
   - Review them in the "files changed" bar and inline diffs, then Keep or Undo, per file or per hunk.
+  - Edits made outside edit tools (shell commands like `sed -i`, the agent's own patch tooling) are found by comparing the workspace before and after the turn, and shown the same way. This uses a private snapshot repository in the extension's storage; your own git repository is never touched, and it works without one.
 - **Native permission prompts.** ACP `session/request_permission` is shown as a VS Code tool confirmation (Allow / Allow in this Session / Skip) with a diff preview.
 - **Fallback where native edits are blocked.**
   - Agent-host chat sessions (e.g. Copilot CLI) reject extension edits.
@@ -36,10 +42,10 @@ Each agent runs as its own official CLI, so you use your existing subscription /
   - Reopening a chat after a restart shows its transcript and reattaches the agent's own session (`session/resume`, else `session/load`), so context is kept.
   - Several agents can stay connected at once, one per chat.
   - Agents idle for `acp.chat.idleDisconnectMinutes` are disconnected to free memory, but only if they can restore sessions. The next message reconnects with the chat unchanged.
-- **Everything from the upstream ACP Client:**
-  - Multi-agent configuration with per-agent session lists.
-  - The sidebar chat webview.
-  - Session config options (mode / model pickers).
+- **Agents view** in the Activity Bar: connected agents first, then the others. Connect / disconnect / restart, and a click opens an ACP chat with that agent.
+  - Each connected agent shows what it reports: account and plan, context window, cost, tokens, and usage limits (Claude Code: five-hour / weekly limits from the SDK's rate limit events; Codex: the limits it records in `~/.codex/sessions`).
+- **From the upstream ACP Client:**
+  - Multi-agent configuration.
   - Terminal execution.
   - Protocol traffic logging.
   - The agent registry.
@@ -99,14 +105,14 @@ Then run **Preferences: Configure Runtime Arguments**, add the following to `arg
 
 ## Usage
 
-1. Open the **ACP** view in the Activity Bar and click **Connect** on an agent.
-2. Open the Chat view (`Ctrl+Cmd+I` / `Ctrl+Alt+I`) and start a new chat. Use a **Local** session, not "Copilot CLI".
-3. Type `@acp` followed by your request. Follow-up messages in the same chat stay with `@acp`.
-4. When the agent wants to edit a file or run a command, approve it with **Allow** or decline with **Skip**.
-5. Review the changes in the "files changed" bar or the editor, then **Keep** or **Undo**.
+1. Click an agent in the **ACP** view (or run **ACP: Open ACP Chat**, `Cmd+Shift+A` / `Ctrl+Shift+A`). A new **ACP** chat opens in the Chat view with that agent picked.
+   - Or pick **ACP** from the session type menu when starting a new chat.
+2. Choose the model, effort and mode under the input, then type your request. The agent connects on first use.
+3. When the agent wants to edit a file or run a command, approve it with **Allow** or decline with **Skip**.
+4. Review the changes in the "files changed" bar or the editor, then **Keep** or **Undo**.
 
 Tips:
-- **Per-chat sessions:** `@acp` uses the agent's active ACP session. Use **ACP: New Conversation** to start a fresh agent session.
+- **`@acp` elsewhere:** in a Local chat, `@acp` uses the agent's active ACP session.
 - **Copilot CLI sessions:** these sessions block extension edits. There you get the fallback diff card, and changes stay in the **Pending Changes** view until you Keep or Undo them.
 - **Debugging:** **ACP: Show Log** and **ACP: Show Protocol Traffic** show what the agent sends. They are useful for checking how a given adapter reports edits.
 
@@ -145,7 +151,7 @@ Add your own with **ACP: Add Agent Configuration** or the `acp.agents` setting.
 | Command | Description |
 |---------|-------------|
 | `ACP: Connect to Agent` / `Disconnect Agent` / `Restart Agent` | Manage the agent process |
-| `ACP: New Conversation` | Start a new session with the connected agent |
+| `ACP: Open ACP Chat` | Open a new ACP chat, with an agent picked when run from the Agents view |
 | `ACP: Keep All Changes` / `Undo All Changes` | Resolve everything in the Pending Changes view |
 | `ACP: Add Agent Configuration` / `Remove Agent` | Edit `acp.agents` |
 | `ACP: Show Log` / `Show Protocol Traffic` | Output channels for debugging |
@@ -163,12 +169,13 @@ VS Code Chat view ──@acp──▶ AcpChatParticipant ──session/prompt─
 ```
 
 The main pieces:
+- **`src/chat/AcpChatSessions.ts`:** the "ACP" chat session type: pickers, saved chats, per-chat agent sessions, slash commands and listing the agent's own sessions.
 - **`src/chat/AcpChatParticipant.ts`:** maps ACP session updates to chat parts.
   - For agents that edit files themselves, it wraps the edit tool call in `externalEdit`, so VS Code tracks the disk change natively.
 - **`src/chat/TurnRouter.ts`:** connects client-side ACP requests to the chat turn that is streaming. It handles file writes (`textEdit`) and permission prompts.
 - **`src/chat/PermissionTool.ts`:** an internal language-model tool, invoked only to show VS Code's native confirmation UI.
 - **`src/chat/proposed.ts`:** the only file that calls proposed APIs, with feature detection. If a VS Code update changes these APIs, this is the file to fix.
-- **`src/changes/`:** the session-type-independent fallback. It snapshots files, tracks pending changes, and provides the Pending Changes view.
+- **`src/changes/`:** the session-type-independent fallback. It snapshots files, tracks pending changes, and provides the Pending Changes view. `WorkspaceSnapshot.ts` finds edits made outside edit tools.
 
 ## Development
 
@@ -201,6 +208,8 @@ The fake agent copies the message order Claude Code uses for edits:
 - Proposed APIs: install from `.vsix` only, and VS Code updates may need code changes in `src/chat/proposed.ts`.
 - The native confirmation shows an "Input" section, a short JSON summary of the action. VS Code does not offer a way to hide it for extension tools.
 - Native Keep / Undo works only in **Local** chat sessions. Agent-host sessions (Copilot CLI and similar) get the fallback diff card.
+- Slash commands: VS Code needs them declared in advance, so only common ones are suggested; others still work when typed in full.
+- Edits outside edit tools: binary files and files over 5 MB are not shown, nor files ignored by `.gitignore`. Deleted files and files with unsaved editor changes get the diff card instead of native Keep / Undo.
 - "Allow in this Session" is remembered by VS Code, not passed to the agent as `allow_always`.
 
 ## Credits & License
