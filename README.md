@@ -207,6 +207,8 @@ Tests:
 | `npm test` | Unit smoke tests, including that Undo preserves user edits unless forced. |
 | `npm run test:e2e` | Calls the `@acp` handler directly against a fake ACP agent (`test-fixtures/fake-agent.mjs`). Covers approve, reject, keep and undo. |
 | `npm run test:ui` | macOS only. Drives the real Chat view in the installed VS Code and saves screenshots of the test window to `.vscode-test/screenshots/`. Needs Screen Recording permission for your terminal. |
+| `npm run test:codex` | Codex edit turns replayed by a fake Codex (`test-fixtures/fake-codex.mjs`, scenarios in `test-fixtures/codex-scenarios.json`): first through the `@acp` handler (native edits and diff cards, with and without the workspace snapshot), then through the real Chat view, reading VS Code's own editing session. Every changed file must be shown with a diff from its pre-turn content, and the agent's result must stay on disk. |
+| `npm run test:codex-live` | The same checks against the real `@agentclientprotocol/codex-acp`, using the Codex account logged in on this machine (spends a little of its quota). `ACP_CODEX_ACP=@agentclientprotocol/codex-acp@preview` tests another build. |
 
 The fake agent copies the message order Claude Code uses for edits:
 1. A `tool_call` with empty locations.
@@ -214,6 +216,8 @@ The fake agent copies the message order Claude Code uses for edits:
 3. `request_permission`.
 4. The agent writes the file itself.
 5. `completed`.
+
+The fake Codex copies codex-acp's: one `tool_call` already `in_progress` with a diff block per hunk (`_meta.kind` add, delete or update) and no locations, then a `completed` update. Codex writes the files itself without waiting, before or while it reports them. To turn a Codex bug into a test, add a scenario to `codex-scenarios.json` (the ACP Traffic output channel shows what Codex sent).
 
 `test-fixtures/fake-lm` registers a placeholder language model, because the Chat view refuses requests in a profile with no model.
 

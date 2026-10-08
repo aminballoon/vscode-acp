@@ -16,6 +16,55 @@ export function countLineChanges(oldText: string, newText: string): { added: num
   return { added, removed };
 }
 
+/** One ACP `diff` content block; `_meta.kind` is set by codex-acp. */
+export interface FileDiff {
+  oldText?: string | null;
+  newText: string;
+  _meta?: { [key: string]: unknown } | null;
+}
+
+function kindOf(d: FileDiff): unknown {
+  return d._meta?.kind ?? (d.oldText === null || d.oldText === undefined ? 'add' : 'update');
+}
+
+/**
+ * Content of a file before the edits described by `diffs` (in reported
+ * order), given its content `now` after them. Update blocks may be hunks with
+ * context rather than whole files. Returns undefined when the diffs do not
+ * match `now` (e.g. the file changed again since).
+ */
+export function contentBeforeDiffs(diffs: FileDiff[], now: string | null): string | null | undefined {
+  let content = now;
+  for (let end = diffs.length; end > 0;) {
+    const d = diffs[end - 1];
+    const kind = kindOf(d);
+    if (kind === 'add') {
+      if (content !== d.newText) { return undefined; }
+      content = null;
+      end--;
+    } else if (kind === 'delete') {
+      if (content !== null || typeof d.oldText !== 'string') { return undefined; }
+      content = d.oldText;
+      end--;
+    } else {
+      // Hunks of an update are in file order: undo each run of them in one forward pass
+      let start = end - 1;
+      while (start > 0 && kindOf(diffs[start - 1]) === 'update') { start--; }
+      if (content === null) { return undefined; }
+      let out = '', cursor = 0;
+      for (const h of diffs.slice(start, end)) {
+        const at = h.newText ? content.indexOf(h.newText, cursor) : -1;
+        if (at < 0) { return undefined; }
+        out += content.slice(cursor, at) + (h.oldText ?? '');
+        cursor = at + h.newText.length;
+      }
+      content = out + content.slice(cursor);
+      end = start;
+    }
+  }
+  return content;
+}
+
 /**
  * Line rows for a compact diff preview. With `context`, unchanged runs longer
  * than six lines are collapsed to their first and last two lines; without it,

@@ -7,7 +7,7 @@ import type { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import type { TurnRouter, ActiveTurn } from './TurnRouter';
 import type { ChangeTracker } from '../changes/ChangeTracker';
 import { BaselineContentProvider } from '../changes/ChangesView';
-import { countLineChanges } from '../changes/diffUtil';
+import { contentBeforeDiffs, countLineChanges } from '../changes/diffUtil';
 import { TurnFileChange, WorkspaceSnapshot, WorkspaceSnapshots } from '../changes/WorkspaceSnapshot';
 import { PickedSkill, promptWithSkills, SkillInstructions, SkillSelection } from './SkillSelection';
 import { readSkillBody } from './SkillLibrary';
@@ -36,15 +36,27 @@ interface ToolCallInfo {
 interface TurnState {
   turn: ActiveTurn;
   sessionId: string;
-  /** Resolvers that end an externalEdit callback, per tool call. */
-  externals: Map<string, () => void>;
-  /** Per tool call: whether the session accepted externalEdit (native Keep/Undo). */
-  externalResults: Map<string, Promise<boolean>>;
+  /** Per tool call: settles when the call ends, which ends its externalEdit callbacks. */
+  externals: Map<string, { ended: Promise<void>; end: () => void }>;
+  /**
+   * Per tool call: the files each externalEdit covers, whether the session
+   * accepted it (native Keep/Undo) and their content when VS Code snapshotted them.
+   */
+  externalResults: Map<string, Array<{ paths: string[]; accepted: Promise<boolean>; atStart: Map<string, string | null> }>>;
   kinds: Map<string, ToolKind>;
   /** Files each edit tool call touches; snapshotted before and compared after. */
   editPaths: Map<string, Set<string>>;
+  /**
+   * Edit tool calls that were already running when first reported: the agent
+   * writes without waiting for the client (Codex), so VS Code cannot look at
+   * the files first. Their files are shown at the end of the turn, from their
+   * pre-turn content.
+   */
+  writesFirst: Set<string>;
   /** Every file an edit tool call reported this turn (already shown, natively or as a card). */
   reportedPaths: Set<string>;
+  /** Latest diff blocks of each edit tool call that did not fail, in the order the calls started. */
+  diffs: Map<string, ToolCallContent[]>;
   /** Files saved in the editor during the turn. */
   savedByUser: Set<string>;
   work: Promise<unknown>[];
@@ -67,6 +79,8 @@ export interface ChatParticipantHandle {
   handler: vscode.ChatRequestHandler;
   /** Number of chat requests handled; read by UI tests. */
   requestCount(): number;
+  /** Number of chat requests finished, edits reported included; read by UI tests. */
+  requestsDone(): number;
 }
 
 /**
@@ -86,7 +100,7 @@ export function registerChatParticipant(
   tracker: ChangeTracker,
   skills: SkillSelection,
 ): ChatParticipantHandle {
-  let requestCount = 0;
+  let requestCount = 0, requestsDone = 0;
   const snapshots = new WorkspaceSnapshots(context.globalStorageUri.fsPath);
 
   const handler: vscode.ChatRequestHandler = (request, _ctx, stream, token) =>
@@ -107,7 +121,7 @@ export function registerChatParticipant(
     const session = sessionManager.getSession(sessionId);
     const state: TurnState = {
       turn, sessionId,
-      externals: new Map(), externalResults: new Map(), kinds: new Map(), editPaths: new Map(), reportedPaths: new Set(), savedByUser: new Set(), work: [], thoughtN: 0,
+      externals: new Map(), externalResults: new Map(), kinds: new Map(), editPaths: new Map(), reportedPaths: new Set(), diffs: new Map(), writesFirst: new Set(), savedByUser: new Set(), work: [], thoughtN: 0,
       activity: new TurnActivity(session?.agentDisplayName || session?.agentName || 'agent', (tool, isUpdate) => pushToolCall(stream, tool, isUpdate)),
     };
 
@@ -152,18 +166,17 @@ export function registerChatParticipant(
       stream.markdown(`\n\n**Error:** ${e?.message ?? e}`);
     } finally {
       state.activity.dispose();
-      for (const done of state.externals.values()) { done(); }
+      for (const external of state.externals.values()) { external.end(); }
       // Report edits of tool calls that never reached completed/failed
       for (const id of [...state.editPaths.keys()]) { finishToolEdits(id, state, tracker); }
       // externalEdit must settle before the response completes
-      await Promise.allSettled([...state.work, ...state.externalResults.values()]);
+      await Promise.allSettled([...state.work, ...[...state.externalResults.values()].flat().map(b => b.accepted)]);
       savedSub.dispose();
-      if (snapshot) {
-        await reportUntrackedEdits(snapshot, state, tracker).catch(e => logError('workspace diff failed', e));
-      }
+      await reportUntrackedEdits(snapshot, state, tracker).catch(e => logError('workspace diff failed', e));
       sessionUpdateHandler.removeListener(listener);
       cancelSub.dispose();
       router.end(sessionId);
+      requestsDone++;
     }
     return {};
   };
@@ -177,7 +190,7 @@ export function registerChatParticipant(
       router.answerPermission(permId, optionId);
     }),
   );
-  return { handler, runTurn, requestCount: () => requestCount };
+  return { handler, runTurn, requestCount: () => requestCount, requestsDone: () => requestsDone };
 }
 
 /** Instructions of the picked markdown skills; a missing file is reported and skipped. */
@@ -208,12 +221,15 @@ function renderUpdate(u: SessionUpdate, st: TurnState, router: TurnRouter, track
       const status = u.status ?? (isUpdate ? 'in_progress' : 'pending');
       st.activity.tool(u.toolCallId, u.title, status, isUpdate);
       if (u.kind) { st.kinds.set(u.toolCallId, u.kind); }
+      if (!isUpdate && status !== 'pending') { st.writesFirst.add(u.toolCallId); }
+      if (u.content?.some(c => c.type === 'diff')) { st.diffs.set(u.toolCallId, u.content); }
       // Paths often arrive only in later updates (Claude sends empty locations first)
       const tool: ToolCallInfo = { ...u, kind: u.kind ?? st.kinds.get(u.toolCallId) };
       trackToolEdits(tool, st, router, tracker);
       if (status === 'completed' || status === 'failed') {
-        st.externals.get(u.toolCallId)?.();
+        st.externals.get(u.toolCallId)?.end();
         st.externals.delete(u.toolCallId);
+        if (status === 'failed') { st.diffs.delete(u.toolCallId); }
         finishToolEdits(u.toolCallId, st, tracker);
       }
       break;
@@ -239,10 +255,13 @@ function editPathsOf(tool: ToolCallInfo): string[] {
  * externalEdit so VS Code tracks the disk change with native Keep/Undo.
  */
 function trackToolEdits(tool: ToolCallInfo, st: TurnState, router: TurnRouter, tracker: ChangeTracker): void {
-  if (!tool.kind || !EDIT_KINDS.has(tool.kind) || tool.status === 'completed' || tool.status === 'failed') { return; }
+  if (!tool.kind || !EDIT_KINDS.has(tool.kind)) { return; }
   const paths = editPathsOf(tool);
   if (!paths.length) { return; }
 
+  // Tracking a file after the agent wrote it would show no change: VS Code
+  // diffs from a file's content when it first tracks it
+  if (st.writesFirst.has(tool.toolCallId) || tool.status === 'completed' || tool.status === 'failed') { return; }
   const known = st.editPaths.get(tool.toolCallId) ?? new Set<string>();
   const fresh = paths.filter(p => !known.has(p));
   for (const p of fresh) {
@@ -254,22 +273,35 @@ function trackToolEdits(tool: ToolCallInfo, st: TurnState, router: TurnRouter, t
 
   // Agents writing through fs/write_text_file get precise textEdits instead
   const { turn } = st;
-  if (!turn.native || st.externals.has(tool.toolCallId) || router.usesClientFs(st.sessionId) || !hasNativeEdits(turn.stream)) {
+  if (!fresh.length || !turn.native || router.usesClientFs(st.sessionId) || !hasNativeEdits(turn.stream)) {
     return;
   }
-  paths.forEach(p => turn.externalPaths.add(p));
-  const done = new Promise<void>(resolve => st.externals.set(tool.toolCallId, resolve));
-  const result = trackExternalEdit(turn.stream, paths.map(p => vscode.Uri.file(p)), () => done);
-  if (result) {
-    st.externalResults.set(tool.toolCallId, result);
-  } else {
-    st.externals.delete(tool.toolCallId);
+  // One patch can name more files in later updates (codex-acp's PatchApplyUpdated):
+  // each batch gets its own externalEdit, all ending with the tool call
+  let external = st.externals.get(tool.toolCallId);
+  if (!external) {
+    let end = () => {};
+    const ended = new Promise<void>(resolve => { end = resolve; });
+    external = { ended, end };
+    st.externals.set(tool.toolCallId, external);
+  }
+  const { ended } = external;
+  fresh.forEach(p => turn.externalPaths.add(p));
+  const atStart = new Map<string, string | null>();
+  const accepted = trackExternalEdit(turn.stream, fresh.map(p => vscode.Uri.file(p)), async () => {
+    // VS Code snapshots the files before calling back, so this is what it compares against.
+    // Agents that write without waiting (Codex) may already have written some of them.
+    await Promise.all(fresh.map(async p => { atStart.set(p, await readDisk(p)); }));
+    await ended;
+  });
+  if (accepted) {
+    st.externalResults.set(tool.toolCallId, [...st.externalResults.get(tool.toolCallId) ?? [], { paths: fresh, accepted, atStart }]);
   }
 }
 
 /**
- * After an edit tool call ends: if VS Code tracked it natively, its own
- * "files changed" UI owns Keep/Undo, so drop our snapshot. Otherwise show the
+ * After an edit tool call ends: files VS Code tracked natively get Keep/Undo
+ * from its own "files changed" UI, so drop our snapshot. The rest get the
  * fallback diff card.
  */
 function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTracker): void {
@@ -277,29 +309,57 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
   if (!paths?.size) { return; }
   st.editPaths.delete(toolCallId);
   st.work.push((async () => {
-    // A file only counts as shown if it changed after our snapshot. Agents that
-    // report an edit after writing it (e.g. Codex) leave it unchanged here; the
-    // end-of-turn workspace comparison then shows it from the real pre-turn content.
-    if (await st.externalResults.get(toolCallId)) {
-      for (const p of paths) {
-        const entry = tracker.get(p);
-        if (entry && await readDisk(p) !== entry.baseline) { st.reportedPaths.add(p); }
+    const batches = await Promise.all((st.externalResults.get(toolCallId) ?? []).map(async b => await b.accepted ? [b] : []));
+    const native = new Set(batches.flat().flatMap(b => b.paths));
+    // A file only counts as shown if it changed after VS Code's snapshot. Agents
+    // that write while reporting an edit may leave it unchanged here; the end
+    // of the turn then shows it from its pre-turn content.
+    for (const b of batches.flat()) {
+      for (const p of b.paths) {
+        if (b.atStart.has(p) && await readDisk(p) !== b.atStart.get(p)) { st.reportedPaths.add(p); }
       }
-      await Promise.all([...paths].map(p => tracker.keep(p)));
-    } else {
-      (await reportEdits([...paths], st.turn.stream, tracker)).forEach(p => st.reportedPaths.add(p));
+    }
+    await Promise.all([...native].map(p => tracker.keep(p)));
+    const rest = [...paths].filter(p => !native.has(p));
+    if (rest.length) {
+      (await reportEdits(rest, st.turn.stream, tracker)).forEach(p => st.reportedPaths.add(p));
     }
   })().catch(e => logError('finishToolEdits failed', e)));
 }
 
-/** Show files the turn changed that no edit tool call reported. */
-async function reportUntrackedEdits(snapshot: WorkspaceSnapshot, st: TurnState, tracker: ChangeTracker): Promise<void> {
+/**
+ * Content before the turn of the files edit tool calls changed, rebuilt from
+ * their diffs: undo each call's diffs, last call first, starting from what is
+ * on disk now. Files whose diffs do not match are left out.
+ */
+async function preTurnFromDiffs(st: TurnState): Promise<Map<string, string | null>> {
+  const lastFirst = [...st.diffs.values()].reverse().map(content => content.flatMap(c => c.type === 'diff' ? [c] : []));
+  const paths = new Set(lastFirst.flat().map(d => vscode.Uri.file(d.path).fsPath));
+  const result = new Map<string, string | null>();
+  for (const path of paths) {
+    let content: string | null | undefined = await readDisk(path);
+    for (const diffs of lastFirst) {
+      const own = diffs.filter(d => vscode.Uri.file(d.path).fsPath === path);
+      if (own.length && content !== undefined) { content = contentBeforeDiffs(own, content); }
+    }
+    if (content !== undefined) { result.set(path, content); }
+  }
+  return result;
+}
+
+/** Show files the turn changed that are not shown yet. */
+async function reportUntrackedEdits(snapshot: WorkspaceSnapshot | undefined, st: TurnState, tracker: ChangeTracker): Promise<void> {
   const { turn } = st;
   // Files wrapped in externalEdit are judged by reportedPaths: a late snapshot shows nothing
   const skip = (p: string) => st.reportedPaths.has(p) || turn.written.has(p) || st.savedByUser.has(p);
-  const changes = (await snapshot.changes())
-    .map(c => ({ ...c, path: vscode.Uri.file(c.path).fsPath }))
-    .filter(c => !skip(c.path));
+  const snapshotChanges = await snapshot?.changes().catch(e => { logError('workspace diff failed', e); return []; });
+  const fromSnapshot = (snapshotChanges ?? []).map(c => ({ ...c, path: vscode.Uri.file(c.path).fsPath }));
+  // The workspace snapshot has the real pre-turn content; edit tool diffs cover
+  // the files it misses (no snapshot: workspace too large, not readable, ...)
+  const found = new Set(fromSnapshot.map(c => c.path));
+  const fromDiffs = await Promise.all([...await preTurnFromDiffs(st)].filter(([p]) => !found.has(p))
+    .map(async ([path, before]) => ({ path, before, after: await readDisk(path) })));
+  const changes = [...fromSnapshot, ...fromDiffs.filter(c => c.after !== c.before)].filter(c => !skip(c.path));
   if (!changes.length) { return; }
   log(`workspace diff: ${changes.map(c => c.path).join(', ')}`);
 
@@ -314,15 +374,20 @@ async function reportUntrackedEdits(snapshot: WorkspaceSnapshot, st: TurnState, 
 /**
  * VS Code tracks an external edit by snapshotting files when it starts and
  * reading them back when it ends. The agent already wrote these files, so put
- * the pre-turn content back for a moment and redo the agent's write inside
- * externalEdit. Deletions and files with unsaved editor changes are left to
- * the diff card. Returns the paths that are now tracked natively.
+ * their earlier content back for a moment and redo the agent's write inside
+ * externalEdit. Deletions (VS Code would write a deleted file back) and files
+ * with unsaved editor changes are left to the diff card. Returns the paths
+ * that are now tracked natively.
  */
 async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn): Promise<Set<string>> {
-  const eligible = changes.filter(c => c.after !== null && !findOpenDocument(c.path)?.isDirty);
+  // Never overwrite what the agent may have written since (it can still be running)
+  const eligible = (await Promise.all(changes.map(async c =>
+    c.after !== null && !findOpenDocument(c.path)?.isDirty && await readDisk(c.path) === c.after ? [c] : []))).flat();
   if (!eligible.length) { return new Set(); }
   const uris = eligible.map(c => vscode.Uri.file(c.path));
-  const writeAfter = () => Promise.all(eligible.map((c, i) => vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.after!, 'utf8'))));
+  const writeAfter = () => Promise.all(eligible.map(async (c, i) => {
+    if (await readDisk(c.path) === c.before) { await vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.after!, 'utf8')); }
+  }));
   try {
     await Promise.all(eligible.map((c, i) => c.before === null
       ? vscode.workspace.fs.delete(uris[i])
@@ -332,7 +397,7 @@ async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn)
     const result = trackExternalEdit(turn.stream, uris, writeAfter);
     if (result && await result) { return new Set(eligible.map(c => c.path)); }
   } catch (e) {
-    logError('replaying shell edits as external edit failed', e);
+    logError('replaying edits as external edit failed', e);
   }
   // Whatever happened, leave the agent's result on disk
   await writeAfter().catch(e => logError('restoring agent result failed', e));

@@ -3,24 +3,8 @@ import * as fs from 'node:fs';
 import * as vscode from 'vscode';
 
 import type { AcpExtensionApi } from '../extension';
+import { Part, recordingStream } from './editSession';
 import { ORIGINAL, addFakeAgent, connectFakeAgent, fixtureTarget, resetFixture, waitFor } from './helpers';
-
-type Part = { kind: string; value: any };
-
-/** Stream stub that records every response part. */
-function recordingStream(parts: Part[]): vscode.ChatResponseStream {
-  const rec = (kind: string) => (value: any) => { parts.push({ kind, value }); };
-  return {
-    markdown: rec('markdown'), anchor: rec('anchor'), button: rec('button'), filetree: rec('filetree'),
-    progress: rec('progress'), reference: rec('reference'),
-    push: (part: any) => {
-      const v = vscode as any;
-      const kind = v.ChatResponseMultiDiffPart && part instanceof v.ChatResponseMultiDiffPart ? 'multiDiff'
-        : v.ChatToolInvocationPart && part instanceof v.ChatToolInvocationPart ? 'toolInvocation' : 'push';
-      parts.push({ kind, value: part });
-    },
-  } as unknown as vscode.ChatResponseStream;
-}
 
 /** Send a prompt in an ACP chat session with the given agent picked (auto-approve). */
 function askChat(api: AcpExtensionApi, chat: string, prompt: string, agent: string, command?: string) {

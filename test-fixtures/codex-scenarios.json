@@ -1,0 +1,78 @@
+{
+  "_comment": [
+    "Edit turns replayed by fake-codex.mjs in codex-acp's message shapes (from real traffic logs).",
+    "files: workspace content before the turn. calls: edit tool calls in order.",
+    "edit kinds: update (hunks of [old, new] with context, in file order), add, delete, rewrite (delete + add).",
+    "write: when the agent writes the files relative to reporting the tool call:",
+    "  before (already written), during (one by one, waiting gapsMs before each),",
+    "  after (once VS Code has looked), permission (after the user answers).",
+    "split: a later tool_call_update names the remaining files. shell: an exec_command edit without diffs.",
+    "outside: the files live outside the workspace, where the workspace snapshot cannot see them."
+  ],
+  "base": {
+    "a.py": "import time\n\n\ndef main():\n    time.sleep(2)\n    print(\"hi\")\n",
+    "b.py": "x = 1\ny = 2\n\n\ndef total():\n    return x + y\n",
+    "c.py": "NAME = \"robot\"\nSPEED = 0.5\n",
+    "gone.py": "# to be deleted\n"
+  },
+  "edits": {
+    "a": { "file": "a.py", "kind": "update", "hunks": [["def main():\n    time.sleep(2)\n", "def main():\n    time.sleep(10)\n"]] },
+    "b": { "file": "b.py", "kind": "update", "hunks": [["x = 1\ny = 2\n", "x = 1\ny = 3\n"]] },
+    "c": { "file": "c.py", "kind": "update", "hunks": [["SPEED = 0.5\n", "SPEED = 0.03\n"]] }
+  },
+  "scenarios": {
+    "single file, written after VS Code looked": {
+      "calls": [{ "edits": ["a"], "write": "after" }]
+    },
+    "three files, written while reported (auto-approve race)": {
+      "calls": [{ "edits": ["a", "b", "c"], "write": "during", "gapsMs": [0, 150, 300] }]
+    },
+    "three files, written before reported": {
+      "calls": [{ "edits": ["a", "b", "c"], "write": "before" }]
+    },
+    "several hunks in one file": {
+      "calls": [{
+        "edits": [
+          { "file": "a.py", "kind": "update", "hunks": [
+            ["import time\n", "import math\nimport time\n"],
+            ["    time.sleep(2)\n    print(\"hi\")\n", "    time.sleep(10)\n    print(\"bye\")\n"]
+          ] },
+          "b"
+        ],
+        "write": "during", "gapsMs": [0, 200]
+      }]
+    },
+    "add, delete and rewrite": {
+      "calls": [{
+        "edits": [
+          { "file": "new.py", "kind": "add", "text": "print(\"new\")\n" },
+          { "file": "gone.py", "kind": "delete" },
+          { "file": "c.py", "kind": "rewrite", "text": "NAME = \"rover\"\nSPEED = 0.2\nTURN = 0.1\n" }
+        ],
+        "write": "during", "gapsMs": [0, 150, 300]
+      }]
+    },
+    "same file edited by two tool calls": {
+      "calls": [
+        { "edits": [{ "file": "a.py", "kind": "update", "hunks": [["    time.sleep(2)\n", "    time.sleep(5)\n"]] }], "write": "before" },
+        { "edits": [{ "file": "a.py", "kind": "update", "hunks": [["    time.sleep(5)\n", "    time.sleep(10)\n"]] }, "b"], "write": "during", "gapsMs": [0, 200] }
+      ]
+    },
+    "approved edit": {
+      "calls": [{ "edits": ["a", "b"], "write": "permission", "approval": "allow_once" }]
+    },
+    "rejected edit": {
+      "calls": [{ "edits": ["a"], "write": "permission", "approval": "cancel" }]
+    },
+    "later update names more files": {
+      "calls": [{ "edits": ["a", "b", "c"], "write": "during", "gapsMs": [0, 300, 300], "split": true }]
+    },
+    "edit by a shell command": {
+      "calls": [{ "edits": ["a"], "write": "during", "gapsMs": [50], "shell": true }]
+    },
+    "files outside the workspace, written before reported": {
+      "outside": true,
+      "calls": [{ "edits": ["a", "b", "c"], "write": "before" }]
+    }
+  }
+}

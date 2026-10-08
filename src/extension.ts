@@ -30,6 +30,8 @@ export interface AcpExtensionApi {
   changeTracker: ChangeTracker;
   chatHandler: vscode.ChatRequestHandler;
   chatRequestCount(): number;
+  /** Chat requests finished, edits reported included. */
+  chatRequestsDone(): number;
   /** Request handler of the "ACP" chat session type (applies picker selections first). */
   acpSessionHandler: vscode.ChatRequestHandler;
   /** Config options of the active ACP session. */
@@ -368,6 +370,7 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     changeTracker,
     chatHandler: chatParticipant.handler,
     chatRequestCount: chatParticipant.requestCount,
+    chatRequestsDone: chatParticipant.requestsDone,
     acpSessionHandler: acpSessions.handler,
     acpChats: () => acpSessions.store.list(),
     connectedAgents: () => sessionManager.getConnectedAgentNames(),

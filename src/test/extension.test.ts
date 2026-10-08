@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { ChangeTracker } from '../changes/ChangeTracker';
+import { contentBeforeDiffs } from '../changes/diffUtil';
 
 suite('Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
@@ -46,5 +47,21 @@ suite('Extension Test Suite', () => {
 
 		assert.deepStrictEqual(await tracker.undo('file.txt', true), { undone: true, userEdited: true });
 		assert.strictEqual(files.get('file.txt'), 'original');
+	});
+
+	test('Pre-edit content is rebuilt from the diffs an edit tool call reported', () => {
+		const update = (oldText: string, newText: string) => ({ oldText, newText, _meta: { kind: 'update' } });
+		// Codex sends one block per hunk, with context lines
+		assert.strictEqual(contentBeforeDiffs(
+			[update('a\nb\n', 'a\nB\n'), update('d\ne\n', 'd\nE\nE2\n')],
+			'a\nB\nc\nd\nE\nE2\n',
+		), 'a\nb\nc\nd\ne\n');
+		// A rewrite is a delete followed by an add of the same file
+		assert.strictEqual(contentBeforeDiffs(
+			[{ oldText: 'old\n', newText: '', _meta: { kind: 'delete' } }, { oldText: null, newText: 'new\n', _meta: { kind: 'add' } }],
+			'new\n',
+		), 'old\n');
+		assert.strictEqual(contentBeforeDiffs([{ oldText: null, newText: 'x\n' }], 'x\n'), null, 'added file did not exist');
+		assert.strictEqual(contentBeforeDiffs([update('a\n', 'b\n')], 'c\n'), undefined, 'file changed again since');
 	});
 });
