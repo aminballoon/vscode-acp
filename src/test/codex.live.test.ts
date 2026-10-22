@@ -1,14 +1,8 @@
-import * as assert from 'assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
-import * as vscode from 'vscode';
 
-import type { AcpExtensionApi } from '../extension';
-import { askInChatView, assertVsCodeShows, readOrNull, resetChatView } from './editSession';
-import { EXT_ID, fixtureTarget } from './helpers';
-
-const AGENT = 'Codex (live test)';
+import { liveEditSuite } from './liveEdits';
 
 /**
  * Real Codex (@agentclientprotocol/codex-acp) through the real Chat view.
@@ -16,100 +10,17 @@ const AGENT = 'Codex (live test)';
  * its quota. Opt-in: `npm run test:codex-live`. Set ACP_CODEX_ACP to test
  * another adapter build (e.g. `@agentclientprotocol/codex-acp@preview`).
  */
-suite('Codex edits, live codex-acp', function () {
-  this.timeout(300_000);
-
-  let api: AcpExtensionApi;
-  const dir = () => nodePath.join(nodePath.dirname(fixtureTarget()), 'codex-live');
-
-  suiteSetup(async function () {
+liveEditSuite({
+  title: 'Codex (live test)',
+  command: 'npx',
+  args: ['-y', process.env.ACP_CODEX_ACP || '@agentclientprotocol/codex-acp@latest'],
+  skipReason: () => {
     const home = process.env.CODEX_HOME || nodePath.join(os.homedir(), '.codex');
-    if (!fs.existsSync(nodePath.join(home, 'auth.json')) && !process.env.OPENAI_API_KEY) {
-      console.log('[codex-live] skipped: Codex is not logged in (run `codex login`)');
-      this.skip();
-    }
-    api = await vscode.extensions.getExtension<AcpExtensionApi>(EXT_ID)!.activate();
-    const config = vscode.workspace.getConfiguration('acp');
-    await config.update('agents', {
-      ...config.inspect<Record<string, unknown>>('agents')?.globalValue ?? {},
-      [AGENT]: { command: 'npx', args: ['-y', process.env.ACP_CODEX_ACP || '@agentclientprotocol/codex-acp@latest'] },
-    }, vscode.ConfigurationTarget.Global);
-    await config.update('chat.nativeEdits', true, vscode.ConfigurationTarget.Global);
-    await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
-    await vscode.commands.executeCommand('acp.connectAgent', AGENT);
-  });
-
-  setup(async () => {
-    // Diff cards (e.g. deletions) of earlier tests are still pending
-    await api.changeTracker.keepAll();
-    fs.rmSync(dir(), { recursive: true, force: true });
-    fs.mkdirSync(dir(), { recursive: true });
-    fs.writeFileSync(nodePath.join(dir(), 'a.py'), 'import time\n\n\ndef main():\n    time.sleep(2)\n    print("hi")\n');
-    fs.writeFileSync(nodePath.join(dir(), 'b.py'), 'x = 1\ny = 2\n');
-    fs.writeFileSync(nodePath.join(dir(), 'c.py'), 'SPEED = 0.5\n');
-    fs.writeFileSync(nodePath.join(dir(), 'gone.py'), '# to be deleted\n');
-  });
-
-  teardown(async () => {
-    await resetChatView();
-    fs.rmSync(dir(), { recursive: true, force: true });
-  });
-
-  /** Ask Codex for exact edits, check it made them and that VS Code shows every changed file. */
-  async function expectEdits(instructions: string, changed: string[], followUp = false): Promise<void> {
-    const files = ['a.py', 'b.py', 'c.py', 'gone.py', 'new.py'].map(f => vscode.Uri.file(nodePath.join(dir(), f)).fsPath);
-    const before = new Map(files.map(p => [p, readOrNull(p)] as const));
-    await askInChatView(api, `@acp In the directory ${dir()}: ${instructions} `
-      + 'Edit the files with apply_patch only. Do not run commands, do not touch other files and do not explain.', 240_000, followUp);
-    const unchanged = changed.filter(f => before.get(vscode.Uri.file(nodePath.join(dir(), f)).fsPath) === readOrNull(nodePath.join(dir(), f)));
-    assert.deepStrictEqual(unchanged, [], `unchanged after the turn (Codex skipped the edit, or something undid it): ${unchanged.join(', ')}`);
-    await assertVsCodeShows(before, api);
-  }
-
-  test('three files in one patch', () => expectEdits(
-    'In one single patch: in a.py change time.sleep(2) to time.sleep(10); in b.py change y = 2 to y = 3; in c.py change SPEED = 0.5 to SPEED = 0.03.',
-    ['a.py', 'b.py', 'c.py'],
-  ));
-
-  test('add, delete and the same file in two patches', () => expectEdits(
-    'First patch: create new.py containing print("new"), delete gone.py and in a.py change time.sleep(2) to time.sleep(5). '
-    + 'Then, in a second, separate patch: in a.py change time.sleep(5) to time.sleep(10) and in b.py change x = 1 to x = 4.',
-    ['a.py', 'b.py', 'gone.py', 'new.py'],
-  ));
-
-  test('the same file again in the same chat, after Keep', async () => {
-    await expectEdits('In a.py change time.sleep(2) to time.sleep(10).', ['a.py']);
-    await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
-    await expectEdits('In a.py change time.sleep(10) to time.sleep(20) and in b.py change y = 2 to y = 3.', ['a.py', 'b.py'], true);
-  });
-
-  // Read-only: Codex asks before every edit, and the user approves it in the Chat view
-  test('the same file again in the same chat, after Keep, edits approved in the Chat view, files open', async () => {
-    const config = vscode.workspace.getConfiguration('acp');
-    await config.update('autoApprovePermissions', 'ask', vscode.ConfigurationTarget.Global);
-    await api.setActiveMode('read-only');
-    let asking = true;
-    // Approve the native tool confirmations ("Allow") as they come
-    const approving = (async () => {
-      while (asking) {
-        await vscode.commands.executeCommand('workbench.action.chat.acceptTool').then(undefined, () => undefined);
-        await new Promise(r => setTimeout(r, 500));
-      }
-    })();
-    try {
-      for (const f of ['a.py', 'b.py']) {
-        await vscode.window.showTextDocument(vscode.Uri.file(nodePath.join(dir(), f)), { preview: false });
-      }
-      await expectEdits('In a.py change time.sleep(2) to time.sleep(10).', ['a.py']);
-      await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
-      await expectEdits('In a.py change time.sleep(10) to time.sleep(20) and in b.py change y = 2 to y = 3.', ['a.py', 'b.py'], true);
-      await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
-      await expectEdits('In a.py change time.sleep(20) to time.sleep(30).', ['a.py'], true);
-    } finally {
-      asking = false;
-      await approving;
-      await api.setActiveMode('agent');
-      await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
-    }
-  });
+    return fs.existsSync(nodePath.join(home, 'auth.json')) || process.env.OPENAI_API_KEY ? undefined : 'Codex is not logged in (run `codex login`)';
+  },
+  rules: 'Edit the files with apply_patch only. Do not run commands, do not touch other files and do not explain.',
+  deleteRule: 'Delete gone.py in the same patch.',
+  // Read-only asks before every edit; "Auto review" edits workspace files without asking
+  askingMode: 'read-only',
+  defaultMode: 'agent',
 });

@@ -115,7 +115,7 @@ export function assertEditsShown(
 }
 
 /** Files in the real chat editing session, with the content their diffs start from. */
-async function vsCodeEditingSession(): Promise<Map<string, string | null>> {
+export async function vsCodeEditingSession(): Promise<Map<string, string | null>> {
   await vscode.commands.executeCommand('chatEditing.viewChanges');
   // A multi-diff tab (TabInputTextMultiDiff, not in @types/vscode 1.85)
   type MultiDiff = { textDiffs: Array<{ original?: vscode.Uri; modified: vscode.Uri }> };
@@ -125,6 +125,9 @@ async function vsCodeEditingSession(): Promise<Map<string, string | null>> {
   if (!tab) { return result; }
   for (const d of (tab.input as MultiDiff).textDiffs) {
     const original = d.original ? (await vscode.workspace.openTextDocument(d.original)).getText() : null;
+    if (process.env.ACP_DEBUG_SESSION) {
+      console.log(`[session] ${nodePath.basename(d.modified.fsPath)} original=${d.original?.toString()} ${JSON.stringify(original)} disk=${JSON.stringify(readOrNull(d.modified.fsPath))}`);
+    }
     result.set(d.modified.fsPath, original);
   }
   await vscode.window.tabGroups.close(tab);
@@ -173,10 +176,15 @@ export async function askInChatView(api: AcpExtensionApi, query: string, timeout
   await sleep(1000);
 }
 
-/** Keep every edit of the chat and close the editors, ready for the next test. */
+/**
+ * Keep every edit of the chat and close the editors, ready for the next test.
+ * Also forget tool approvals: after "Allow", VS Code may confirm later
+ * permission prompts by itself, so a test could no longer reject one.
+ */
 export async function resetChatView(): Promise<void> {
   await vscode.commands.executeCommand('chatEditing.acceptAllFiles').then(undefined, () => undefined);
   await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  await vscode.commands.executeCommand('workbench.action.chat.resetTrustedTools').then(undefined, () => undefined);
 }
 
 /** The fake agent's result file: what it left in each file (null: deleted). */

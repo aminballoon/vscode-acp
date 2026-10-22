@@ -61,7 +61,7 @@ export class ConnectionManager {
     // Create handlers
     const fsHandler = new FileSystemHandler(this.chat.changeTracker, this.chat.turnRouter);
     const terminalHandler = new TerminalHandler();
-    const permissionHandler = new PermissionHandler(this.chat.permissionPrompter);
+    const permissionHandler = new PermissionHandler(this.chat.permissionPrompter, params => this.chat.turnRouter?.prepareAnswer(params));
 
     // Create client implementation
     const client = new AcpClientImpl(

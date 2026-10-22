@@ -206,11 +206,15 @@ Tests:
 
 | Command | What it runs |
 |---------|--------------|
-| `npm test` | Unit smoke tests, including that Undo preserves user edits unless forced. |
+| `npm test` | Unit tests: pending changes across turns (ChangeTracker), pre-edit content rebuilt from diffs, permission answers (Skip is not Allow; answers wait for VS Code's snapshot), the debug report. |
 | `npm run test:e2e` | Calls the `@acp` handler directly against a fake ACP agent (`test-fixtures/fake-agent.mjs`). Covers approve, reject, keep and undo. |
 | `npm run test:ui` | macOS only. Drives the real Chat view in the installed VS Code and saves screenshots of the test window to `.vscode-test/screenshots/`. Needs Screen Recording permission for your terminal. |
 | `npm run test:codex` | Codex edit turns replayed by a fake Codex (`test-fixtures/fake-codex.mjs`, scenarios in `test-fixtures/codex-scenarios.json`): first through the `@acp` handler (native edits and diff cards, with and without the workspace snapshot), then through the real Chat view, reading VS Code's own editing session. Every changed file must be shown with a diff from its pre-turn content, and the agent's result must stay on disk. |
-| `npm run test:codex-live` | The same checks against the real `@agentclientprotocol/codex-acp`, using the Codex account logged in on this machine (spends a little of its quota). `ACP_CODEX_ACP=@agentclientprotocol/codex-acp@preview` tests another build. |
+| `npm run test:claude` | Claude-style edit turns (the fake agent) through the real Chat view. |
+| `npm run test:codex-live` | Real `@agentclientprotocol/codex-acp`, using the Codex account logged in on this machine (spends a little of its quota). `ACP_CODEX_ACP=@agentclientprotocol/codex-acp@preview` tests another build. |
+| `npm run test:claude-live` | The same cases with real `@agentclientprotocol/claude-agent-acp`, using the Claude account logged in on this machine. `ACP_CLAUDE_ACP` tests another build. |
+
+The Chat view suites run each case as one chat, turn after turn. Between turns the user keeps, undoes, edits the file themself, or leaves the changes pending. Each case runs with the files closed, with them open, with prompts answered in the Chat view (Allow or Skip), and with diff cards instead of native edits. After every turn, VS Code must show each changed file with a diff from its content when last kept or undone. The live suites cover the same cases with real agents, including the mode in which each agent asks before every edit (Codex: Read-only).
 
 The fake agent copies the message order Claude Code uses for edits:
 1. A `tool_call` with empty locations.

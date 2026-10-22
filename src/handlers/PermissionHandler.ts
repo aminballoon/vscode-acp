@@ -20,9 +20,14 @@ export function pickOption(options: PermissionOption[], kind: 'allow' | 'reject'
  * otherwise the in-chat prompt, falling back to a QuickPick.
  */
 export class PermissionHandler {
-  constructor(private readonly inlinePrompter?: InlinePermissionPrompter) {}
+  constructor(
+    private readonly inlinePrompter?: InlinePermissionPrompter,
+    /** Runs before any answer, auto-approved ones included (e.g. let VS Code snapshot the files first). */
+    private readonly prepare?: (params: RequestPermissionRequest) => Promise<void> | undefined,
+  ) {}
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    await this.prepare?.(params);
     const autoApprove = vscode.workspace.getConfiguration('acp').get<string>('autoApprovePermissions', 'none');
     const title = params.toolCall?.title || 'Permission Request';
     log(`requestPermission: ${title} (autoApprove=${autoApprove})`);

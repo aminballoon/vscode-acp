@@ -586,6 +586,8 @@
     "test:ui": "zsh scripts/ui-screenshots.sh",
     "test:codex": "npm run compile && npm run compile-tests && vscode-test --label e2e --grep Codex && vscode-test --label ui-codex",
     "test:codex-live": "npm run compile && npm run compile-tests && vscode-test --label codex-live",
+    "test:claude": "npm run compile && npm run compile-tests && vscode-test --label ui-claude",
+    "test:claude-live": "npm run compile && npm run compile-tests && vscode-test --label claude-live",
     "setup": "node scripts/install.mjs"
   },
   "dependencies": {

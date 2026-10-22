@@ -12,7 +12,7 @@ import * as acp from '../node_modules/@agentclientprotocol/sdk/dist/acp.js';
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 class FakeAgent {
-  constructor(conn) { this.conn = conn; this.cwds = new Map(); this.rawSdk = new Set(); }
+  constructor(conn) { this.conn = conn; this.cwds = new Map(); this.rawSdk = new Set(); this.calls = 0; }
   async initialize() {
     return { protocolVersion: acp.PROTOCOL_VERSION, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
   }
@@ -97,36 +97,38 @@ class FakeAgent {
       return { stopReason: 'end_turn' };
     }
     const oldText = fs.readFileSync(path, 'utf8');
+    // Tool call ids are unique across turns, as with real agents
+    const n = ++this.calls, l1 = `l1-${n}`, s1 = `s1-${n}`, e1 = `e1-${n}`, g1 = `g1-${n}`;
     const newText = oldText.includes('sleep(2)') ? oldText.replace('sleep(2)', 'sleep(10)') : oldText + '# edited\n';
 
     // Like Codex: the patch is already applied when the edit tool call arrives
     if (text.startsWith('late-edit')) {
       fs.writeFileSync(path, newText);
-      await send({ sessionUpdate: 'tool_call', toolCallId: 'l1', title: 'Editing files', kind: 'edit', status: 'in_progress',
+      await send({ sessionUpdate: 'tool_call', toolCallId: l1, title: 'Editing files', kind: 'edit', status: 'in_progress',
         content: [{ type: 'diff', path, oldText: 'sleep(2)', newText: 'sleep(10)' }] });
-      await send({ sessionUpdate: 'tool_call_update', toolCallId: 'l1', status: 'completed' });
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: l1, status: 'completed' });
       await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Patched.' } });
       return { stopReason: 'end_turn' };
     }
 
     // Like an agent running `sed -i` in its terminal tool: no paths, no diff
     if (text.startsWith('shell-edit')) {
-      await send({ sessionUpdate: 'tool_call', toolCallId: 's1', title: `sed -i '' 's/sleep(2)/sleep(10)/' ${name}`, kind: 'execute', status: 'in_progress' });
+      await send({ sessionUpdate: 'tool_call', toolCallId: s1, title: `sed -i '' 's/sleep(2)/sleep(10)/' ${name}`, kind: 'execute', status: 'in_progress' });
       fs.writeFileSync(path, newText);
-      await send({ sessionUpdate: 'tool_call_update', toolCallId: 's1', status: 'completed' });
+      await send({ sessionUpdate: 'tool_call_update', toolCallId: s1, status: 'completed' });
       await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Edited with sed.' } });
       return { stopReason: 'end_turn' };
     }
 
-    await send({ sessionUpdate: 'tool_call', toolCallId: 'e1', title: 'Preparing file…', kind: 'edit', status: 'pending', content: [], locations: [] });
-    await send({ sessionUpdate: 'tool_call', toolCallId: 'g1', title: 'Grep sleep', kind: 'search', status: 'pending' });
-    await send({ sessionUpdate: 'tool_call_update', toolCallId: 'e1', title: 'Edit hello.py', locations: [{ path }],
+    await send({ sessionUpdate: 'tool_call', toolCallId: e1, title: 'Preparing file…', kind: 'edit', status: 'pending', content: [], locations: [] });
+    await send({ sessionUpdate: 'tool_call', toolCallId: g1, title: 'Grep sleep', kind: 'search', status: 'pending' });
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: e1, title: 'Edit hello.py', locations: [{ path }],
       content: [{ type: 'diff', path, oldText: 'sleep(2)', newText: 'sleep(10)' }] });
-    await send({ sessionUpdate: 'tool_call_update', toolCallId: 'g1', status: 'completed' });
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: g1, status: 'completed' });
 
     const perm = await this.conn.requestPermission({
       sessionId,
-      toolCall: { toolCallId: 'e1', title: 'Edit hello.py', kind: 'edit', status: 'pending', locations: [{ path }],
+      toolCall: { toolCallId: e1, title: 'Edit hello.py', kind: 'edit', status: 'pending', locations: [{ path }],
         content: [{ type: 'diff', path, oldText: 'sleep(2)', newText: 'sleep(10)' }] },
       options: [
         { optionId: 'allow-once', name: 'Yes', kind: 'allow_once' },
@@ -136,7 +138,7 @@ class FakeAgent {
     const allowed = perm.outcome.outcome === 'selected' && perm.outcome.optionId === 'allow-once';
     if (allowed) { fs.writeFileSync(path, newText); }
     await delay(20);
-    await send({ sessionUpdate: 'tool_call_update', toolCallId: 'e1', status: allowed ? 'completed' : 'failed' });
+    await send({ sessionUpdate: 'tool_call_update', toolCallId: e1, status: allowed ? 'completed' : 'failed' });
     await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: allowed ? 'Edited the file.' : 'Edit rejected.' } });
     return { stopReason: 'end_turn' };
   }

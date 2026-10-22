@@ -20,6 +20,8 @@ function read(path) {
   try { return fs.readFileSync(path, 'utf8'); } catch { return null; }
 }
 
+let appended = 0;
+
 /** Diff blocks (as codex-acp sends them) and resulting content of one edit. */
 function applyEdit(edit, path) {
   const current = read(path);
@@ -28,6 +30,12 @@ function applyEdit(edit, path) {
     case 'add': return { blocks: [block(null, edit.text, 'add')], content: edit.text };
     case 'delete': return { blocks: [block(current, '', 'delete')], content: null };
     case 'rewrite': return { blocks: [block(current, '', 'delete'), block(null, edit.text, 'add')], content: edit.text };
+    case 'append': {
+      // One hunk with the last line as context, whatever the file holds now; `{n}` numbers the edit
+      const last = current.slice(current.lastIndexOf('\n', current.length - 2) + 1);
+      const text = edit.text.replace('{n}', String(++appended));
+      return { blocks: [block(last, last + text, 'update')], content: current + text };
+    }
     default: {
       let content = '', cursor = 0;
       for (const [oldText, newText] of edit.hunks) {

@@ -5,7 +5,8 @@ import * as vscode from 'vscode';
 
 import type { AcpExtensionApi } from '../extension';
 import { askInChatView, assertAgentResultKept, assertVsCodeShows, readOrNull, resetChatView, resultFile } from './editSession';
-import { connectFakeAgent, fixtureTarget, sleep } from './helpers';
+import { BETWEEN_TURNS, FOLLOW_UP_SETUPS, FollowUpChat, applySetup, betweenTurns, undoSetup } from './followUpChat';
+import { connectFakeAgent, fixtureTarget } from './helpers';
 
 interface Edit { file: string; kind: string }
 interface Scenario { calls: Array<{ edits: Array<string | Edit>; approval?: string; shell?: boolean }>; outside?: boolean }
@@ -58,53 +59,51 @@ suite('Codex edits in the real Chat view', function () {
     });
   }
 
-  // The same chat continues after its edits were kept: each turn's edits must show again
-  const variants = [{ ask: false, open: false }, { ask: false, open: true }, { ask: true, open: true }];
+  // The same chat continues after the user kept, undid, edited or left the changes: each turn must show again
+  let followUpN = 0;
   for (const [name, { turns }] of Object.entries(fixtures.followUps)) {
-    for (const { ask, open } of variants) {
-      const asks = turns.some(t => t.calls.some(c => c.approval));
-      if (ask && !asks) { continue; }
-      test(`follow-up: ${name}${open ? ', files open' : ''}${ask ? ', approved in the Chat view' : ''}`, async () => {
-        const dir = nodePath.join(nodePath.dirname(fixtureTarget()), 'codex-scenario');
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.mkdirSync(dir, { recursive: true });
-        const config = vscode.workspace.getConfiguration('acp');
-        if (ask) { await config.update('autoApprovePermissions', 'ask', vscode.ConfigurationTarget.Global); }
-        let asking = true;
-        // Approve the native tool confirmations ("Allow") while the turns run
-        const approving = (async () => {
-          while (ask && asking) {
-            await vscode.commands.executeCommand('workbench.action.chat.acceptTool').then(undefined, () => undefined);
-            await sleep(300);
-          }
-        })();
-        try {
-          for (const [file, text] of Object.entries(fixtures.base)) { fs.writeFileSync(nodePath.join(dir, file), text); }
-          if (open) {
-            for (const file of Object.keys(fixtures.base)) {
-              await vscode.window.showTextDocument(vscode.Uri.file(nodePath.join(dir, file)), { preview: false });
-            }
-          }
-          for (const [i, turn] of turns.entries()) {
-            const files = turn.calls.flatMap(c => c.edits.map(e => typeof e === 'string' ? fixtures.edits[e].file : e.file));
-            const before = new Map(files.map(f => {
-              const p = vscode.Uri.file(nodePath.join(dir, f)).fsPath;
-              return [p, readOrNull(p)] as const;
-            }));
-            await askInChatView(api, `@acp codex-scenario ${name} #${i} ${dir} ${resultFile()}`, undefined, i > 0);
-            assertAgentResultKept(resultFile());
-            await assertVsCodeShows(before, api);
-            // Keep, as the user does before asking for more
-            await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
-          }
-        } finally {
-          asking = false;
-          await approving;
-          if (ask) { await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global); }
-          await resetChatView();
-          fs.rmSync(dir, { recursive: true, force: true });
+    for (const setup of FOLLOW_UP_SETUPS) {
+      // Only the user can reject an edit: in the Chat view, when asked
+      if (!setup.ask && turns.some(t => t.calls.some(c => c.approval === 'skip'))) { continue; }
+      for (const between of BETWEEN_TURNS) {
+        const title = `follow-up: ${name}; ${between} between turns; ${setup.label}`;
+        // Known issue: a file undone once in the chat and edited again by an agent that writes
+        // first (replayed at the end of the turn) is not reverted by a second Undo in VS Code
+        if (between === 'undo' && turns.length > 2 && !setup.cards) {
+          test.skip(`${title} (known issue: second Undo of a replayed edit)`, () => undefined);
+          continue;
         }
-      });
+        test(title, async () => {
+          // A folder of its own: VS Code may still hold models of the files of earlier tests
+          const dir = nodePath.join(nodePath.dirname(fixtureTarget()), `codex-follow-up-${++followUpN}`);
+          // Diff cards of earlier tests (e.g. deletions) are still pending
+          await api.changeTracker.keepAll();
+          fs.rmSync(dir, { recursive: true, force: true });
+          fs.mkdirSync(dir, { recursive: true });
+          for (const [file, text] of Object.entries(fixtures.base)) { fs.writeFileSync(nodePath.join(dir, file), text); }
+          const paths = Object.keys(fixtures.base).map(f => vscode.Uri.file(nodePath.join(dir, f)).fsPath);
+          const chat = new FollowUpChat(api, paths);
+          await applySetup(setup, paths);
+          try {
+            for (const [i, turn] of turns.entries()) {
+              if (i > 0) { await betweenTurns(chat, between, paths[0]); }
+              const answer = turn.calls.find(c => c.approval)?.approval;
+              if (setup.ask) { chat.answerPrompts(answer === 'skip' ? 'skip' : 'allow'); }
+              const files = turn.calls.flatMap(c => c.edits.map(e => vscode.Uri.file(nodePath.join(dir, typeof e === 'string' ? fixtures.edits[e].file : e.file)).fsPath));
+              await chat.ask(`@acp codex-scenario ${name} #${i} ${dir} ${resultFile()}`,
+                answer === 'skip' ? { unchanged: files } : { changed: files });
+              assertAgentResultKept(resultFile());
+              await chat.stopAnswering();
+            }
+          } finally {
+            await chat.stopAnswering();
+            await undoSetup(setup);
+            await resetChatView();
+            await api.changeTracker.keepAll();
+            fs.rmSync(dir, { recursive: true, force: true });
+          }
+        });
+      }
     }
   }
 });

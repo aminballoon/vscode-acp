@@ -3,7 +3,7 @@ import { diffLines } from 'diff';
 import type { RequestPermissionRequest, WriteTextFileRequest } from '@agentclientprotocol/sdk';
 
 import { createFile, hasNativeEdits, pushTextEdits } from './proposed';
-import { PERMISSION_TOOL, PermissionTool, PermissionInput } from './PermissionTool';
+import { PERMISSION_TOOL, PermissionTool, PermissionInput, isApproval } from './PermissionTool';
 import type { ChangeTracker } from '../changes/ChangeTracker';
 import { diffRows } from '../changes/diffUtil';
 import { pickOption } from '../handlers/PermissionHandler';
@@ -22,6 +22,8 @@ export interface ActiveTurn {
   externalPaths: Set<string>;
   /** Files a permission request named; their ChangeTracker snapshot must not outlive the turn unshown. */
   permissionPaths: Set<string>;
+  /** Per file: settles once VS Code has snapshotted it for an externalEdit (or gave up). */
+  editStarts: Map<string, Promise<void>>;
   /** Last content written per path via textEdit, served to readTextFile until the turn ends. */
   written: Map<string, string>;
   pendingPermissions: Map<string, (optionId: string) => void>;
@@ -63,6 +65,7 @@ export class TurnRouter {
       autoApprove: this.autoApproveNext.delete(sessionId),
       externalPaths: new Set(),
       permissionPaths: new Set(),
+      editStarts: new Map(),
       written: new Map(),
       pendingPermissions: new Map(),
     };
@@ -126,18 +129,37 @@ export class TurnRouter {
     return true;
   }
 
+  /**
+   * Before any answer to a permission request, auto-approved ones included:
+   * snapshot the files the agent is about to edit, and let VS Code finish
+   * snapshotting them for their externalEdit. Agents write right after an
+   * approval; an instant one (auto-approve, "allow in this session") would
+   * otherwise let the write land first, and VS Code would see no change.
+   */
+  async prepareAnswer(params: RequestPermissionRequest, timeoutMs = 3000): Promise<void> {
+    const turn = this.turns.get(params.sessionId);
+    if (!turn) { return; }
+    const paths = (params.toolCall?.locations ?? []).map(l => vscode.Uri.file(l.path).fsPath);
+    log(`[edits] permission request ${params.toolCall?.toolCallId ?? '?'}: kind=${params.toolCall?.kind ?? '-'} status=${params.toolCall?.status ?? '-'} `
+      + `locations=[${paths.join(', ')}] diffs=${(params.toolCall?.content ?? []).filter(c => c.type === 'diff').length}`);
+    paths.forEach(p => turn.permissionPaths.add(p));
+    // Before the answer: the agent writes right after it
+    await Promise.all(paths.map(p => this.tracker.captureBaseline(p).catch(() => undefined)));
+    const starts = paths.flatMap(p => turn.editStarts.get(p) ?? []);
+    if (!starts.length) { return; }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const started = await Promise.race([
+      Promise.all(starts).then(() => true),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+    clearTimeout(timer);
+    log(`[edits] permission request ${params.toolCall?.toolCallId ?? '?'}: ${started ? 'VS Code has snapshotted the files' : `answered without VS Code's snapshot (${timeoutMs} ms)`}`);
+  }
+
   /** Ask for permission inside the active turn. Resolves to undefined when no turn is active. */
   async requestPermission(params: RequestPermissionRequest): Promise<string | undefined> {
     const turn = this.turns.get(params.sessionId);
     if (!turn) { return undefined; }
-    log(`[edits] permission request ${params.toolCall?.toolCallId ?? '?'}: kind=${params.toolCall?.kind ?? '-'} status=${params.toolCall?.status ?? '-'} `
-      + `locations=[${(params.toolCall?.locations ?? []).map(l => l.path).join(', ')}] diffs=${(params.toolCall?.content ?? []).filter(c => c.type === 'diff').length}`);
-    // Snapshot files the agent is about to edit, before the user approves
-    for (const l of params.toolCall?.locations ?? []) {
-      const path = vscode.Uri.file(l.path).fsPath;
-      turn.permissionPaths.add(path);
-      void this.tracker.captureBaseline(path);
-    }
     if (turn.autoApprove) {
       log(`permission: auto-approved (${params.toolCall?.title ?? ''})`);
       return pickOption(params.options, 'allow')?.optionId ?? 'cancelled';
@@ -181,7 +203,12 @@ export class TurnRouter {
 
     this.permissionTool.register(input, describeToolCall(params));
     try {
-      await vscode.lm.invokeTool(PERMISSION_TOOL, { input, toolInvocationToken: turn.toolToken }, turn.token);
+      const result = await vscode.lm.invokeTool(PERMISSION_TOOL, { input, toolInvocationToken: turn.toolToken }, turn.token);
+      // "Skip" also resolves, with VS Code's own text instead of the tool's result
+      if (!isApproval(result)) {
+        log(`permission: skipped (${title})`);
+        return pickOption(params.options, 'reject')?.optionId ?? 'cancelled';
+      }
       log(`permission: allowed (${title})`);
       return pickOption(params.options, 'allow')?.optionId ?? 'cancelled';
     } catch (e: any) {

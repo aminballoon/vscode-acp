@@ -48,6 +48,18 @@ export function trackExternalEdit(
   );
 }
 
+/**
+ * Mark files as edited by the agent in this response, after an externalEdit
+ * showed them. VS Code puts a file back into "modified" (pending Keep/Undo)
+ * only for text edits: a file the user kept earlier in the chat would stay
+ * "kept" after an externalEdit, its new diff hidden and Keep doing nothing.
+ */
+export function markEdited(stream: vscode.ChatResponseStream, uris: vscode.Uri[]): void {
+  const s = stream as ProposedStream;
+  if (typeof s.textEdit !== 'function') { return; }
+  for (const uri of uris) { s.textEdit(uri, true); }
+}
+
 export function pushThinking(stream: vscode.ChatResponseStream, id: string, text: string): void {
   const s = stream as ProposedStream;
   if (typeof s.thinkingProgress === 'function') {

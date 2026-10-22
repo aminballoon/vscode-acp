@@ -11,7 +11,7 @@ import { contentBeforeDiffs, countLineChanges } from '../changes/diffUtil';
 import { TurnFileChange, WorkspaceSnapshot, WorkspaceSnapshots } from '../changes/WorkspaceSnapshot';
 import { PickedSkill, promptWithSkills, SkillInstructions, SkillSelection } from './SkillSelection';
 import { readSkillBody } from './SkillLibrary';
-import { hasNativeEdits, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
+import { hasNativeEdits, markEdited, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
 import { TurnActivity } from './TurnActivity';
 import { fingerprint, log, logError } from '../utils/Logger';
 
@@ -148,6 +148,8 @@ export function registerChatParticipant(
       + `clientFs=${router.usesClientFs(sessionId)} snapshot=${snapshot ? 'yes' : 'no'} cwd=${cwd ?? '?'}`);
     // Files saved in the editor meanwhile were changed by the user, not the agent
     const savedSub = vscode.workspace.onDidSaveTextDocument(d => {
+      // VS Code saves files itself when an externalEdit starts tracking them
+      if (turn.externalPaths.has(d.uri.fsPath)) { return; }
       log(`[edits] saved in the editor during the turn: ${d.uri.fsPath}`);
       state.savedByUser.add(d.uri.fsPath);
     });
@@ -307,13 +309,20 @@ function trackToolEdits(tool: ToolCallInfo, st: TurnState, router: TurnRouter, t
   const { ended } = external;
   fresh.forEach(p => turn.externalPaths.add(p));
   const atStart = new Map<string, string | null>();
+  // Permission answers wait for this, so the agent writes after VS Code's snapshot
+  let started = () => {};
+  const startedP = new Promise<void>(resolve => { started = resolve; });
+  fresh.forEach(p => turn.editStarts.set(p, startedP));
   const accepted = trackExternalEdit(turn.stream, fresh.map(p => vscode.Uri.file(p)), async () => {
     // VS Code snapshots the files before calling back, so this is what it compares against.
     // Agents that write without waiting (Codex) may already have written some of them.
     await Promise.all(fresh.map(async p => { atStart.set(p, await readDisk(p)); }));
+    started();
     log(`[edits] ${tool.toolCallId}: externalEdit started: ${fresh.map(p => `${p}=${fingerprint(atStart.get(p))}`).join(', ')}`);
     await ended;
   });
+  void accepted?.finally(started);
+  if (!accepted) { started(); }
   if (accepted) {
     st.externalResults.set(tool.toolCallId, [...st.externalResults.get(tool.toolCallId) ?? [], { paths: fresh, accepted, atStart }]);
   }
@@ -339,7 +348,7 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
         const now = await readDisk(p);
         const shown = b.atStart.has(p) && now !== b.atStart.get(p);
         log(`[edits] ${toolCallId}: externalEdit ${p}: at start=${fingerprint(b.atStart.get(p))} now=${fingerprint(now)} → ${shown ? 'shown natively' : 'no change seen, left to the end of the turn'}`);
-        if (shown) { st.reportedPaths.add(p); }
+        if (shown) { st.reportedPaths.add(p); markEdited(st.turn.stream, [vscode.Uri.file(p)]); }
       }
     }
     const rejected = (st.externalResults.get(toolCallId)?.length ?? 0) - batches.flat().length;
@@ -450,7 +459,10 @@ async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn)
       log(`[edits] replay externalEdit started: ${eligible.map(c => `${c.path} editor=${fingerprint(findOpenDocument(c.path)?.getText())}`).join(', ')}`);
       await writeAfter();
     });
-    if (result && await result) { return new Set(eligible.map(c => c.path)); }
+    if (result && await result) {
+      markEdited(turn.stream, uris);
+      return new Set(eligible.map(c => c.path));
+    }
     log(`[edits] replay externalEdit ${result ? 'rejected' : 'unavailable'}; diff cards instead`);
   } catch (e) {
     logError('replaying edits as external edit failed', e);
