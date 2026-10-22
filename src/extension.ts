@@ -37,6 +37,8 @@ export interface AcpExtensionApi {
   acpSessionHandler: vscode.ChatRequestHandler;
   /** Config options of the active ACP session. */
   activeConfigOptions(): unknown[] | null;
+  /** Switch the active ACP session's mode (e.g. Codex "read-only", which asks before every edit). */
+  setActiveMode(modeId: string): Promise<void>;
   /** Saved ACP chats. */
   acpChats(): StoredChat[];
   /** Names of the agents currently connected. */
@@ -390,6 +392,10 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     agentStatus: name => agentStatus.get(name),
     openAcpChat: id => acpSessions.openChat(id),
     activeConfigOptions: () => sessionManager.getActiveSession()?.configOptions ?? null,
+    setActiveMode: async modeId => {
+      const id = sessionManager.getActiveSessionId();
+      if (id) { await sessionManager.setMode(id, modeId); }
+    },
   };
 }
 

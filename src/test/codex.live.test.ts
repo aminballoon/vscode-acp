@@ -39,7 +39,9 @@ suite('Codex edits, live codex-acp', function () {
     await vscode.commands.executeCommand('acp.connectAgent', AGENT);
   });
 
-  setup(() => {
+  setup(async () => {
+    // Diff cards (e.g. deletions) of earlier tests are still pending
+    await api.changeTracker.keepAll();
     fs.rmSync(dir(), { recursive: true, force: true });
     fs.mkdirSync(dir(), { recursive: true });
     fs.writeFileSync(nodePath.join(dir(), 'a.py'), 'import time\n\n\ndef main():\n    time.sleep(2)\n    print("hi")\n');
@@ -79,5 +81,35 @@ suite('Codex edits, live codex-acp', function () {
     await expectEdits('In a.py change time.sleep(2) to time.sleep(10).', ['a.py']);
     await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
     await expectEdits('In a.py change time.sleep(10) to time.sleep(20) and in b.py change y = 2 to y = 3.', ['a.py', 'b.py'], true);
+  });
+
+  // Read-only: Codex asks before every edit, and the user approves it in the Chat view
+  test('the same file again in the same chat, after Keep, edits approved in the Chat view, files open', async () => {
+    const config = vscode.workspace.getConfiguration('acp');
+    await config.update('autoApprovePermissions', 'ask', vscode.ConfigurationTarget.Global);
+    await api.setActiveMode('read-only');
+    let asking = true;
+    // Approve the native tool confirmations ("Allow") as they come
+    const approving = (async () => {
+      while (asking) {
+        await vscode.commands.executeCommand('workbench.action.chat.acceptTool').then(undefined, () => undefined);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    })();
+    try {
+      for (const f of ['a.py', 'b.py']) {
+        await vscode.window.showTextDocument(vscode.Uri.file(nodePath.join(dir(), f)), { preview: false });
+      }
+      await expectEdits('In a.py change time.sleep(2) to time.sleep(10).', ['a.py']);
+      await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
+      await expectEdits('In a.py change time.sleep(10) to time.sleep(20) and in b.py change y = 2 to y = 3.', ['a.py', 'b.py'], true);
+      await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
+      await expectEdits('In a.py change time.sleep(20) to time.sleep(30).', ['a.py'], true);
+    } finally {
+      asking = false;
+      await approving;
+      await api.setActiveMode('agent');
+      await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
+    }
   });
 });
