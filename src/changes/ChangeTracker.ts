@@ -205,10 +205,15 @@ export class ChangeTracker {
     return skipped;
   }
 
-  /** Drop entries whose content equals baseline (e.g. permission was denied). */
-  async prune(): Promise<void> {
-    for (const [path, entry] of [...this.entries]) {
+  /**
+   * Drop entries whose content equals baseline (e.g. permission was denied),
+   * or only those whose path passes `filter`.
+   */
+  async prune(filter: (path: string) => boolean = () => true): Promise<void> {
+    for (const path of [...this.entries.keys()].filter(filter)) {
       await this.serial(path, async () => {
+        const entry = this.entries.get(path);
+        if (!entry) { return; }
         const current = await this.readDisk(path);
         if (current === entry.baseline) {
           this.entries.delete(path);

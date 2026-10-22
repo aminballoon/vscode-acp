@@ -54,11 +54,11 @@ suite('Codex edits, live codex-acp', function () {
   });
 
   /** Ask Codex for exact edits, check it made them and that VS Code shows every changed file. */
-  async function expectEdits(instructions: string, changed: string[]): Promise<void> {
+  async function expectEdits(instructions: string, changed: string[], followUp = false): Promise<void> {
     const files = ['a.py', 'b.py', 'c.py', 'gone.py', 'new.py'].map(f => vscode.Uri.file(nodePath.join(dir(), f)).fsPath);
     const before = new Map(files.map(p => [p, readOrNull(p)] as const));
     await askInChatView(api, `@acp In the directory ${dir()}: ${instructions} `
-      + 'Edit the files with apply_patch only. Do not run commands, do not touch other files and do not explain.', 240_000);
+      + 'Edit the files with apply_patch only. Do not run commands, do not touch other files and do not explain.', 240_000, followUp);
     const unchanged = changed.filter(f => before.get(vscode.Uri.file(nodePath.join(dir(), f)).fsPath) === readOrNull(nodePath.join(dir(), f)));
     assert.deepStrictEqual(unchanged, [], `unchanged after the turn (Codex skipped the edit, or something undid it): ${unchanged.join(', ')}`);
     await assertVsCodeShows(before, api);
@@ -74,4 +74,10 @@ suite('Codex edits, live codex-acp', function () {
     + 'Then, in a second, separate patch: in a.py change time.sleep(5) to time.sleep(10) and in b.py change x = 1 to x = 4.',
     ['a.py', 'b.py', 'gone.py', 'new.py'],
   ));
+
+  test('the same file again in the same chat, after Keep', async () => {
+    await expectEdits('In a.py change time.sleep(2) to time.sleep(10).', ['a.py']);
+    await vscode.commands.executeCommand('chatEditing.acceptAllFiles');
+    await expectEdits('In a.py change time.sleep(10) to time.sleep(20) and in b.py change y = 2 to y = 3.', ['a.py', 'b.py'], true);
+  });
 });

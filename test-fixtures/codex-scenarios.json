@@ -7,7 +7,8 @@
     "  before (already written), during (one by one, waiting gapsMs before each),",
     "  after (once VS Code has looked), permission (after the user answers).",
     "split: a later tool_call_update names the remaining files. shell: an exec_command edit without diffs.",
-    "outside: the files live outside the workspace, where the workspace snapshot cannot see them."
+    "outside: the files live outside the workspace, where the workspace snapshot cannot see them.",
+    "followUps: turns sent one after another in the same chat, every edit kept in between."
   ],
   "base": {
     "a.py": "import time\n\n\ndef main():\n    time.sleep(2)\n    print(\"hi\")\n",
@@ -18,7 +19,9 @@
   "edits": {
     "a": { "file": "a.py", "kind": "update", "hunks": [["def main():\n    time.sleep(2)\n", "def main():\n    time.sleep(10)\n"]] },
     "b": { "file": "b.py", "kind": "update", "hunks": [["x = 1\ny = 2\n", "x = 1\ny = 3\n"]] },
-    "c": { "file": "c.py", "kind": "update", "hunks": [["SPEED = 0.5\n", "SPEED = 0.03\n"]] }
+    "c": { "file": "c.py", "kind": "update", "hunks": [["SPEED = 0.5\n", "SPEED = 0.03\n"]] },
+    "a2": { "file": "a.py", "kind": "update", "hunks": [["    time.sleep(10)\n", "    time.sleep(20)\n"]] },
+    "b2": { "file": "b.py", "kind": "update", "hunks": [["y = 3\n", "y = 4\n"]] }
   },
   "scenarios": {
     "single file, written after VS Code looked": {
@@ -73,6 +76,26 @@
     "files outside the workspace, written before reported": {
       "outside": true,
       "calls": [{ "edits": ["a", "b", "c"], "write": "before" }]
+    }
+  },
+  "followUps": {
+    "same file again, written after VS Code looked": {
+      "turns": [{ "calls": [{ "edits": ["a"], "write": "after" }] }, { "calls": [{ "edits": ["a2"], "write": "after" }] }]
+    },
+    "same files again, written while reported": {
+      "turns": [
+        { "calls": [{ "edits": ["a", "b"], "write": "during", "gapsMs": [0, 150] }] },
+        { "calls": [{ "edits": ["a2", "b2"], "write": "during", "gapsMs": [0, 150] }] }
+      ]
+    },
+    "same file again, written before reported": {
+      "turns": [{ "calls": [{ "edits": ["a"], "write": "before" }] }, { "calls": [{ "edits": ["a2"], "write": "before" }] }]
+    },
+    "same files again, approved edit": {
+      "turns": [
+        { "calls": [{ "edits": ["a", "b"], "write": "permission", "approval": "allow_once" }] },
+        { "calls": [{ "edits": ["a2", "b2"], "write": "permission", "approval": "allow_once" }] }
+      ]
     }
   }
 }

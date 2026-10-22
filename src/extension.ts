@@ -24,6 +24,7 @@ import { getAgentNames } from './config/AgentConfig';
 import { fetchRegistry } from './config/RegistryClient';
 import { log, logError, disposeChannels, getOutputChannel, getTrafficChannel } from './utils/Logger';
 import { initTelemetry, sendEvent } from './utils/TelemetryManager';
+import { exportDebugReport } from './utils/DebugReport';
 
 /** Exposed for integration tests. */
 export interface AcpExtensionApi {
@@ -247,6 +248,15 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     getTrafficChannel().show();
   });
 
+  // Export a debug report (for bug reports from other users)
+  const exportDebugReportCmd = vscode.commands.registerCommand('acp.exportDebugReport', () => {
+    sendEvent('command/exportDebugReport');
+    return exportDebugReport({
+      agents: () => sessionManager.getConnectedAgentNames().map(name => ({ name, info: sessionManager.getAgentSession(name)?.initResponse.agentInfo })),
+      pendingChanges: () => changeTracker.list().map(([p]) => p),
+    });
+  });
+
   // Refresh Agents tree
   const refreshAgentsCmd = vscode.commands.registerCommand('acp.refreshAgents', () => {
     agentTreeProvider.refresh();
@@ -350,6 +360,7 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     restartAgentCmd,
     showLogCmd,
     showTrafficCmd,
+    exportDebugReportCmd,
     refreshAgentsCmd,
     addAgentCmd,
     removeAgentCmd,

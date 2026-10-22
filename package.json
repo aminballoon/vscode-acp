@@ -309,6 +309,10 @@
         "title": "ACP: Show Protocol Traffic"
       },
       {
+        "command": "acp.exportDebugReport",
+        "title": "ACP: Export Debug Report"
+      },
+      {
         "command": "acp.browseRegistry",
         "title": "ACP: Browse Agent Registry"
       },

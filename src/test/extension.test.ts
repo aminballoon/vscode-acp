@@ -2,6 +2,8 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { ChangeTracker } from '../changes/ChangeTracker';
 import { contentBeforeDiffs } from '../changes/diffUtil';
+import { buildDebugReport } from '../utils/DebugReport';
+import { fingerprint, log, logTraffic } from '../utils/Logger';
 
 suite('Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
@@ -63,5 +65,26 @@ suite('Extension Test Suite', () => {
 		), 'old\n');
 		assert.strictEqual(contentBeforeDiffs([{ oldText: null, newText: 'x\n' }], 'x\n'), null, 'added file did not exist');
 		assert.strictEqual(contentBeforeDiffs([update('a\n', 'b\n')], 'c\n'), undefined, 'file changed again since');
+	});
+
+	test('Debug report: log without file contents, traffic only on request, no env values', async () => {
+		const config = vscode.workspace.getConfiguration('acp');
+		const agents = config.inspect<Record<string, unknown>>('agents')?.globalValue;
+		await config.update('agents', { 'Report Agent': { command: 'npx', args: ['some-acp'], env: { SECRET_KEY: 'sk-do-not-leak' } } }, vscode.ConfigurationTarget.Global);
+		try {
+			log(`[edits] report test ${fingerprint('file body')}`);
+			logTraffic('recv', { jsonrpc: '2.0', method: 'session/update', params: { marker: 'traffic-marker' } });
+			const sources = { agents: () => [{ name: 'Report Agent', info: { name: 'report-agent', version: '9.9.9' } }], pendingChanges: () => ['/tmp/x.py'] };
+			const report = buildDebugReport(sources, false);
+			assert.ok(report.includes(`[edits] report test ${fingerprint('file body')}`), 'recent log');
+			assert.ok(!report.includes('file body'), 'file content only as a fingerprint');
+			assert.ok(report.includes('Report Agent: npx some-acp (env: SECRET_KEY) — connected: report-agent 9.9.9'), report);
+			assert.ok(!report.includes('sk-do-not-leak'), 'env values stay out');
+			assert.ok(report.includes('/tmp/x.py'), 'pending diff cards');
+			assert.ok(!report.includes('traffic-marker'), 'no traffic unless asked');
+			assert.ok(buildDebugReport(sources, true).includes('traffic-marker'), 'traffic when asked');
+		} finally {
+			await config.update('agents', agents, vscode.ConfigurationTarget.Global);
+		}
 	});
 });

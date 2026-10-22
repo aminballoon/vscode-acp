@@ -13,7 +13,7 @@ import { PickedSkill, promptWithSkills, SkillInstructions, SkillSelection } from
 import { readSkillBody } from './SkillLibrary';
 import { hasNativeEdits, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
 import { TurnActivity } from './TurnActivity';
-import { log, logError } from '../utils/Logger';
+import { fingerprint, log, logError } from '../utils/Logger';
 
 import type {
   SessionNotification, SessionUpdate, ToolCallContent, ToolCallLocation, ToolKind,
@@ -144,8 +144,13 @@ export function registerChatParticipant(
     // tooling) are found by comparing the git working tree after the turn
     const cwd = session?.cwd;
     const snapshot = cwd ? await snapshots.take(cwd) : undefined;
+    log(`[edits] turn ${requestCount} start: agent=${session?.agentName ?? '?'} native=${turn.native} nativeEdits=${hasNativeEdits(stream)} `
+      + `clientFs=${router.usesClientFs(sessionId)} snapshot=${snapshot ? 'yes' : 'no'} cwd=${cwd ?? '?'}`);
     // Files saved in the editor meanwhile were changed by the user, not the agent
-    const savedSub = vscode.workspace.onDidSaveTextDocument(d => state.savedByUser.add(d.uri.fsPath));
+    const savedSub = vscode.workspace.onDidSaveTextDocument(d => {
+      log(`[edits] saved in the editor during the turn: ${d.uri.fsPath}`);
+      state.savedByUser.add(d.uri.fsPath);
+    });
 
     try {
       // Slash commands picked in the chat input go to the agent as typed (`/compact ...`),
@@ -173,6 +178,10 @@ export function registerChatParticipant(
       await Promise.allSettled([...state.work, ...[...state.externalResults.values()].flat().map(b => b.accepted)]);
       savedSub.dispose();
       await reportUntrackedEdits(snapshot, state, tracker).catch(e => logError('workspace diff failed', e));
+      // Files a permission request named but the agent left unchanged (rejected, or never written)
+      await tracker.prune(p => turn.permissionPaths.has(p)).catch(e => logError('prune failed', e));
+      log(`[edits] turn ${requestCount} end: shown during the turn=${[...state.reportedPaths].join(', ') || 'none'} `
+        + `ChangeTracker entries=${tracker.list().map(([p]) => p).join(', ') || 'none'}`);
       sessionUpdateHandler.removeListener(listener);
       cancelSub.dispose();
       router.end(sessionId);
@@ -225,6 +234,12 @@ function renderUpdate(u: SessionUpdate, st: TurnState, router: TurnRouter, track
       if (u.content?.some(c => c.type === 'diff')) { st.diffs.set(u.toolCallId, u.content); }
       // Paths often arrive only in later updates (Claude sends empty locations first)
       const tool: ToolCallInfo = { ...u, kind: u.kind ?? st.kinds.get(u.toolCallId) };
+      if (tool.kind && EDIT_KINDS.has(tool.kind)) {
+        const diffs = (u.content ?? []).flatMap(c => c.type === 'diff'
+          ? [`${c.path} (${String(c._meta?.kind ?? '-')}, old=${fingerprint(c.oldText)}, new=${fingerprint(c.newText)})`] : []);
+        log(`[edits] ${u.sessionUpdate} ${u.toolCallId}: kind=${tool.kind} status=${status} writesFirst=${st.writesFirst.has(u.toolCallId)} `
+          + `diffs=[${diffs.join('; ')}] locations=[${(u.locations ?? []).map(l => l.path).join(', ')}]`);
+      }
       trackToolEdits(tool, st, router, tracker);
       if (status === 'completed' || status === 'failed') {
         st.externals.get(u.toolCallId)?.end();
@@ -261,7 +276,10 @@ function trackToolEdits(tool: ToolCallInfo, st: TurnState, router: TurnRouter, t
 
   // Tracking a file after the agent wrote it would show no change: VS Code
   // diffs from a file's content when it first tracks it
-  if (st.writesFirst.has(tool.toolCallId) || tool.status === 'completed' || tool.status === 'failed') { return; }
+  if (st.writesFirst.has(tool.toolCallId) || tool.status === 'completed' || tool.status === 'failed') {
+    log(`[edits] ${tool.toolCallId}: not tracked while running (${st.writesFirst.has(tool.toolCallId) ? 'agent writes first' : tool.status}); left to the end of the turn`);
+    return;
+  }
   const known = st.editPaths.get(tool.toolCallId) ?? new Set<string>();
   const fresh = paths.filter(p => !known.has(p));
   for (const p of fresh) {
@@ -274,6 +292,7 @@ function trackToolEdits(tool: ToolCallInfo, st: TurnState, router: TurnRouter, t
   // Agents writing through fs/write_text_file get precise textEdits instead
   const { turn } = st;
   if (!fresh.length || !turn.native || router.usesClientFs(st.sessionId) || !hasNativeEdits(turn.stream)) {
+    if (fresh.length) { log(`[edits] ${tool.toolCallId}: no externalEdit (native=${turn.native} clientFs=${router.usesClientFs(st.sessionId)})`); }
     return;
   }
   // One patch can name more files in later updates (codex-acp's PatchApplyUpdated):
@@ -292,6 +311,7 @@ function trackToolEdits(tool: ToolCallInfo, st: TurnState, router: TurnRouter, t
     // VS Code snapshots the files before calling back, so this is what it compares against.
     // Agents that write without waiting (Codex) may already have written some of them.
     await Promise.all(fresh.map(async p => { atStart.set(p, await readDisk(p)); }));
+    log(`[edits] ${tool.toolCallId}: externalEdit started: ${fresh.map(p => `${p}=${fingerprint(atStart.get(p))}`).join(', ')}`);
     await ended;
   });
   if (accepted) {
@@ -316,9 +336,14 @@ function finishToolEdits(toolCallId: string, st: TurnState, tracker: ChangeTrack
     // of the turn then shows it from its pre-turn content.
     for (const b of batches.flat()) {
       for (const p of b.paths) {
-        if (b.atStart.has(p) && await readDisk(p) !== b.atStart.get(p)) { st.reportedPaths.add(p); }
+        const now = await readDisk(p);
+        const shown = b.atStart.has(p) && now !== b.atStart.get(p);
+        log(`[edits] ${toolCallId}: externalEdit ${p}: at start=${fingerprint(b.atStart.get(p))} now=${fingerprint(now)} → ${shown ? 'shown natively' : 'no change seen, left to the end of the turn'}`);
+        if (shown) { st.reportedPaths.add(p); }
       }
     }
+    const rejected = (st.externalResults.get(toolCallId)?.length ?? 0) - batches.flat().length;
+    if (rejected) { log(`[edits] ${toolCallId}: ${rejected} externalEdit(s) rejected by the chat session`); }
     await Promise.all([...native].map(p => tracker.keep(p)));
     const rest = [...paths].filter(p => !native.has(p));
     if (rest.length) {
@@ -359,14 +384,27 @@ async function reportUntrackedEdits(snapshot: WorkspaceSnapshot | undefined, st:
   const found = new Set(fromSnapshot.map(c => c.path));
   const fromDiffs = await Promise.all([...await preTurnFromDiffs(st)].filter(([p]) => !found.has(p))
     .map(async ([path, before]) => ({ path, before, after: await readDisk(path) })));
-  const changes = [...fromSnapshot, ...fromDiffs.filter(c => c.after !== c.before)].filter(c => !skip(c.path));
+  const all = [...fromSnapshot, ...fromDiffs.filter(c => c.after !== c.before)];
+  log(`[edits] end of turn: snapshot=${snapshot ? (snapshotChanges ? `${fromSnapshot.length} changed` : 'failed') : 'none'} `
+    + `from diffs=${fromDiffs.length} (${fromDiffs.filter(c => c.after !== c.before).length} changed)`);
+  for (const c of all) {
+    const why = st.reportedPaths.has(c.path) ? 'already shown' : turn.written.has(c.path) ? 'written through the client'
+      : st.savedByUser.has(c.path) ? 'saved in the editor during the turn' : 'to show';
+    log(`[edits]   ${c.path}: before=${fingerprint(c.before)} after=${fingerprint(c.after)} → ${why}`);
+  }
+  const changes = all.filter(c => !skip(c.path));
   if (!changes.length) { return; }
   log(`workspace diff: ${changes.map(c => c.path).join(', ')}`);
 
   // Native "files changed" (per-hunk Keep/Undo) where the chat session supports it
   const native = turn.native && hasNativeEdits(turn.stream) ? await replayAsExternalEdit(changes, turn) : new Set<string>();
+  if (native.size) { log(`[edits] shown natively at the end of the turn: ${[...native].join(', ')}`); }
+  // VS Code's own "files changed" owns their Keep/Undo now: drop snapshots taken
+  // earlier (e.g. at a permission request), or they would outlive the turn
+  await Promise.all([...native].map(p => tracker.keep(p)));
   const rest = changes.filter(c => !native.has(c.path));
   if (!rest.length) { return; }
+  log(`[edits] diff cards for: ${rest.map(c => `${c.path} (existing card baseline=${fingerprint(tracker.get(c.path)?.baseline ?? undefined)})`).join(', ')}`);
   await Promise.all(rest.map(c => tracker.noteTurnChange(c.path, c.before)));
   await reportEdits(rest.map(c => c.path), turn.stream, tracker);
 }
@@ -381,21 +419,39 @@ async function reportUntrackedEdits(snapshot: WorkspaceSnapshot | undefined, st:
  */
 async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn): Promise<Set<string>> {
   // Never overwrite what the agent may have written since (it can still be running)
-  const eligible = (await Promise.all(changes.map(async c =>
-    c.after !== null && !findOpenDocument(c.path)?.isDirty && await readDisk(c.path) === c.after ? [c] : []))).flat();
+  const eligible = (await Promise.all(changes.map(async c => {
+    const doc = findOpenDocument(c.path);
+    const disk = await readDisk(c.path);
+    const why = c.after === null ? 'deleted' : doc?.isDirty ? 'unsaved changes in the editor' : disk !== c.after ? `disk changed since (${fingerprint(disk)})` : undefined;
+    log(`[edits] replay ${c.path}: editor=${doc ? `open (${fingerprint(doc.getText())}${doc.isDirty ? ', dirty' : ''})` : 'not open'} → ${why ? `diff card: ${why}` : 'externalEdit'}`);
+    return why ? [] : [c];
+  }))).flat();
   if (!eligible.length) { return new Set(); }
   const uris = eligible.map(c => vscode.Uri.file(c.path));
   const writeAfter = () => Promise.all(eligible.map(async (c, i) => {
-    if (await readDisk(c.path) === c.before) { await vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.after!, 'utf8')); }
+    const disk = await readDisk(c.path);
+    if (disk === c.before) {
+      await vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.after!, 'utf8'));
+    } else {
+      log(`[edits] replay ${c.path}: not rewritten, disk holds ${fingerprint(disk)} instead of the pre-turn content`);
+    }
   }));
   try {
     await Promise.all(eligible.map((c, i) => c.before === null
       ? vscode.workspace.fs.delete(uris[i])
       : vscode.workspace.fs.writeFile(uris[i], Buffer.from(c.before, 'utf8'))));
     // Open editors must show the pre-turn content before VS Code snapshots it
-    await Promise.all(eligible.map(c => documentShows(c.path, c.before ?? '')));
-    const result = trackExternalEdit(turn.stream, uris, writeAfter);
+    await Promise.all(eligible.map(async c => {
+      if (!await documentShows(c.path, c.before ?? '')) {
+        log(`[edits] replay ${c.path}: the editor still shows ${fingerprint(findOpenDocument(c.path)?.getText())}, not the pre-turn content`);
+      }
+    }));
+    const result = trackExternalEdit(turn.stream, uris, async () => {
+      log(`[edits] replay externalEdit started: ${eligible.map(c => `${c.path} editor=${fingerprint(findOpenDocument(c.path)?.getText())}`).join(', ')}`);
+      await writeAfter();
+    });
     if (result && await result) { return new Set(eligible.map(c => c.path)); }
+    log(`[edits] replay externalEdit ${result ? 'rejected' : 'unavailable'}; diff cards instead`);
   } catch (e) {
     logError('replaying edits as external edit failed', e);
   }
@@ -408,16 +464,16 @@ function findOpenDocument(path: string): vscode.TextDocument | undefined {
   return vscode.workspace.textDocuments.find(d => d.uri.scheme === 'file' && d.uri.fsPath === path);
 }
 
-/** Resolve once the open editor buffer (if any) has reloaded to `text`, or after a timeout. */
-function documentShows(path: string, text: string, timeoutMs = 3000): Promise<void> {
+/** Resolve once the open editor buffer (if any) has reloaded to `text` (true), or after a timeout (false). */
+function documentShows(path: string, text: string, timeoutMs = 3000): Promise<boolean> {
   const doc = findOpenDocument(path);
-  if (!doc || doc.getText() === text) { return Promise.resolve(); }
+  if (!doc || doc.getText() === text) { return Promise.resolve(true); }
   return new Promise(resolve => {
-    const done = () => { sub.dispose(); clearTimeout(timer); resolve(); };
+    const done = (shows: boolean) => { sub.dispose(); clearTimeout(timer); resolve(shows); };
     const sub = vscode.workspace.onDidChangeTextDocument(e => {
-      if (e.document.uri.fsPath === path && e.document.getText() === text) { done(); }
+      if (e.document.uri.fsPath === path && e.document.getText() === text) { done(true); }
     });
-    const timer = setTimeout(done, timeoutMs);
+    const timer = setTimeout(() => done(false), timeoutMs);
   });
 }
 

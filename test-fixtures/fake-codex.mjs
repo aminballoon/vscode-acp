@@ -4,7 +4,8 @@
 // "Editing files") carrying a diff block per hunk with `_meta.kind` and no
 // locations, then a `tool_call_update` carrying only the status. Codex writes
 // the files itself, without waiting for the client.
-// Prompt: `codex-scenario <scenario name> <dir> <result file>`: dir holds the
+// Prompt: `codex-scenario <scenario name> <dir> <result file>` (or `<follow-up
+// name> #<turn index>` for one turn of a follow-up): dir holds the
 // scenario files; the result file gets what the agent left in each file
 // (null: deleted), so tests can check nothing overwrote it.
 import * as fs from 'node:fs';
@@ -62,7 +63,9 @@ class FakeCodex {
     const send = update => this.conn.sessionUpdate({ sessionId, update });
     const text = params.prompt.map(p => p.text ?? '').join(' ');
     const m = text.match(/^codex-scenario (.+) (\/\S+) (\/\S+)$/);
-    const scenario = m && fixtures.scenarios[m[1]];
+    // `<follow-up name> #<n>`: turn n of a follow-up
+    const turn = m?.[1].match(/^(.+) #(\d+)$/);
+    const scenario = m && (turn ? fixtures.followUps[turn[1]]?.turns[Number(turn[2])] : fixtures.scenarios[m[1]]);
     if (!scenario) {
       await send({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Unknown scenario: ${text}` } });
       return { stopReason: 'end_turn' };

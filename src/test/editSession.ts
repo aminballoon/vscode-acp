@@ -107,6 +107,10 @@ export function assertEditsShown(
       problems.push(`${name}: changed but not shown`);
     }
   }
+  // A ChangeTracker entry without a diff card would linger as a pending change
+  for (const p of before.keys()) {
+    if (api.changeTracker.get(p) && !carded.has(p)) { problems.push(`${nodePath.basename(p)}: stale ChangeTracker entry`); }
+  }
   assert.deepStrictEqual(problems, [], problems.join('\n'));
 }
 
@@ -147,18 +151,20 @@ export async function assertVsCodeShows(before: Map<string, string | null>, api:
     } else if (session.get(p) !== (was ?? '')) {
       problems.push(`${name}: VS Code's diff starts from ${JSON.stringify(session.get(p))}`);
     }
+    // Shown natively or unchanged: a ChangeTracker entry would linger as a pending change
+    if ((was === now || session.has(p)) && api.changeTracker.get(p)) { problems.push(`${name}: stale ChangeTracker entry`); }
   }
   assert.deepStrictEqual(problems, [], problems.join('\n'));
 }
 
-/** Send `query` from a new chat in the real Chat view and wait until the turn has finished. */
-export async function askInChatView(api: AcpExtensionApi, query: string, timeoutMs = 30_000): Promise<void> {
+/** Send `query` in the real Chat view (from a new chat unless `followUp`) and wait until the turn has finished. */
+export async function askInChatView(api: AcpExtensionApi, query: string, timeoutMs = 30_000, followUp = false): Promise<void> {
   // The Chat view refuses requests without a model; the fake-lm fixture provides one
   const [model] = await waitFor(async () => {
     const m = await vscode.lm.selectChatModels({ vendor: 'acp-test' });
     return m.length ? m : undefined;
   }, 20_000, 'fake language model');
-  await vscode.commands.executeCommand('workbench.action.chat.newChat');
+  if (!followUp) { await vscode.commands.executeCommand('workbench.action.chat.newChat'); }
   const done = api.chatRequestsDone();
   await vscode.commands.executeCommand('workbench.action.chat.open', {
     query, modelSelector: { vendor: model.vendor, id: model.id },

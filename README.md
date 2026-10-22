@@ -127,6 +127,7 @@ Tips:
 - **`@acp` elsewhere:** in a Local chat, `@acp` uses the agent's active ACP session.
 - **Copilot CLI sessions:** these sessions block extension edits. There you get the fallback diff card, and changes stay in the **Pending Changes** view until you Keep or Undo them.
 - **Debugging:** **ACP: Show Log** and **ACP: Show Protocol Traffic** show what the agent sends. They are useful for checking how a given adapter reports edits.
+- **Bug reports:** reproduce the problem, then run **ACP: Export Debug Report** and send the saved file. It holds the versions, the relevant settings, the connected agents and the recent **ACP Client** log. Each edit step is logged as `[edits]`, with file contents shown only as a length and hash. Protocol traffic, which includes prompts and file contents, is added only if you choose it. Agent `env` values are never included.
 
 ## Pre-configured Agents
 
@@ -168,6 +169,7 @@ Add your own with **ACP: Add Agent Configuration** or the `acp.agents` setting.
 | `ACP: Keep All Changes` / `Undo All Changes` | Resolve everything in the Pending Changes view |
 | `ACP: Add Agent Configuration` / `Remove Agent` | Edit `acp.agents` |
 | `ACP: Show Log` / `Show Protocol Traffic` | Output channels for debugging |
+| `ACP: Export Debug Report` | Save versions, settings and recent logs to one file for a bug report |
 | `ACP: Browse Agent Registry` | Discover ACP agents |
 
 ## How It Works

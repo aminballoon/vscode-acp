@@ -20,6 +20,8 @@ export interface ActiveTurn {
   autoApprove: boolean;
   /** Paths covered by an open externalEdit(); writes there go straight to disk. */
   externalPaths: Set<string>;
+  /** Files a permission request named; their ChangeTracker snapshot must not outlive the turn unshown. */
+  permissionPaths: Set<string>;
   /** Last content written per path via textEdit, served to readTextFile until the turn ends. */
   written: Map<string, string>;
   pendingPermissions: Map<string, (optionId: string) => void>;
@@ -60,6 +62,7 @@ export class TurnRouter {
       stream, token, toolToken, native,
       autoApprove: this.autoApproveNext.delete(sessionId),
       externalPaths: new Set(),
+      permissionPaths: new Set(),
       written: new Map(),
       pendingPermissions: new Map(),
     };
@@ -127,9 +130,13 @@ export class TurnRouter {
   async requestPermission(params: RequestPermissionRequest): Promise<string | undefined> {
     const turn = this.turns.get(params.sessionId);
     if (!turn) { return undefined; }
+    log(`[edits] permission request ${params.toolCall?.toolCallId ?? '?'}: kind=${params.toolCall?.kind ?? '-'} status=${params.toolCall?.status ?? '-'} `
+      + `locations=[${(params.toolCall?.locations ?? []).map(l => l.path).join(', ')}] diffs=${(params.toolCall?.content ?? []).filter(c => c.type === 'diff').length}`);
     // Snapshot files the agent is about to edit, before the user approves
     for (const l of params.toolCall?.locations ?? []) {
-      void this.tracker.captureBaseline(vscode.Uri.file(l.path).fsPath);
+      const path = vscode.Uri.file(l.path).fsPath;
+      turn.permissionPaths.add(path);
+      void this.tracker.captureBaseline(path);
     }
     if (turn.autoApprove) {
       log(`permission: auto-approved (${params.toolCall?.title ?? ''})`);
