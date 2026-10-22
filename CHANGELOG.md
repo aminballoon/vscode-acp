@@ -18,6 +18,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Changed
 - Renamed to `aminballoon.acp-chat`; requires VS Code 1.140 and `--enable-proposed-api`.
 - Codex preset now uses `@agentclientprotocol/codex-acp@latest` (the `@zed-industries` package is no longer maintained).
+- Presets cut down to the tested agents: Claude Code, Codex CLI and Antigravity. Add others with **ACP: Add Agent Configuration**.
 
 ## [0.2.0] - 2026-05-16
 

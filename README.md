@@ -1,6 +1,6 @@
 # ACP Chat for VS Code
 
-Chat with any [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) coding agent — Claude Code, Codex, Antigravity, Qwen Code and more — **inside VS Code's native Chat view**, with the same edit-review experience as GitHub Copilot: native tool confirmations, a "files changed" bar, inline diffs and Keep / Undo.
+Chat with any [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) coding agent — Claude Code, Codex, Antigravity or any other — **inside VS Code's native Chat view**, with the same edit-review experience as GitHub Copilot: native tool confirmations, a "files changed" bar, inline diffs and Keep / Undo.
 
 Each agent runs as its own official CLI, so you use your existing subscription / OAuth login for that vendor. The extension never handles vendor tokens itself.
 
@@ -133,18 +133,9 @@ Tips:
 
 | Agent | Command |
 |-------|---------|
-| GitHub Copilot | `npx @github/copilot-language-server@latest --acp` |
 | Claude Code | `npx @agentclientprotocol/claude-agent-acp@latest` |
 | Codex CLI | `npx @agentclientprotocol/codex-acp@latest` |
 | Antigravity | `npx -y google-antigravity-acp` |
-| Gemini CLI | `npx @google/gemini-cli@latest --experimental-acp` |
-| Qwen Code | `npx @qwen-code/qwen-code@latest --acp --experimental-skills` |
-| Auggie CLI | `npx @augmentcode/auggie@latest --acp` |
-| Qoder CLI | `npx @qoder-ai/qodercli@latest --acp` |
-| OpenCode | `npx opencode-ai@latest acp` |
-| OpenClaw | `npx openclaw acp` |
-| [Kiro CLI](https://kiro.dev/docs/cli/acp/) | `kiro-cli acp` |
-| [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp) | `hermes acp` |
 
 Add your own with **ACP: Add Agent Configuration** or the `acp.agents` setting.
 
