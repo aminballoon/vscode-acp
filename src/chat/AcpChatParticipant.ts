@@ -13,6 +13,7 @@ import { PickedSkill, promptWithSkills, SkillInstructions, SkillSelection } from
 import { readSkillBody } from './SkillLibrary';
 import { hasNativeEdits, markEdited, pushDiffs, pushThinking, pushToolCall, trackExternalEdit } from './proposed';
 import { TurnActivity } from './TurnActivity';
+import { ReplayedEditUndo } from './ReplayedEditUndo';
 import { fingerprint, log, logError } from '../utils/Logger';
 
 import type {
@@ -102,6 +103,8 @@ export function registerChatParticipant(
 ): ChatParticipantHandle {
   let requestCount = 0, requestsDone = 0;
   const snapshots = new WorkspaceSnapshots(context.globalStorageUri.fsPath);
+  const replayedUndo = new ReplayedEditUndo();
+  context.subscriptions.push(replayedUndo);
 
   const handler: vscode.ChatRequestHandler = (request, _ctx, stream, token) =>
     runTurn(sessionManager.getActiveSessionId(), request, stream, token);
@@ -179,7 +182,7 @@ export function registerChatParticipant(
       // externalEdit must settle before the response completes
       await Promise.allSettled([...state.work, ...[...state.externalResults.values()].flat().map(b => b.accepted)]);
       savedSub.dispose();
-      await reportUntrackedEdits(snapshot, state, tracker).catch(e => logError('workspace diff failed', e));
+      await reportUntrackedEdits(snapshot, state, tracker, replayedUndo).catch(e => logError('workspace diff failed', e));
       // Files a permission request named but the agent left unchanged (rejected, or never written)
       await tracker.prune(p => turn.permissionPaths.has(p)).catch(e => logError('prune failed', e));
       log(`[edits] turn ${requestCount} end: shown during the turn=${[...state.reportedPaths].join(', ') || 'none'} `
@@ -382,7 +385,9 @@ async function preTurnFromDiffs(st: TurnState): Promise<Map<string, string | nul
 }
 
 /** Show files the turn changed that are not shown yet. */
-async function reportUntrackedEdits(snapshot: WorkspaceSnapshot | undefined, st: TurnState, tracker: ChangeTracker): Promise<void> {
+async function reportUntrackedEdits(
+  snapshot: WorkspaceSnapshot | undefined, st: TurnState, tracker: ChangeTracker, replayedUndo: ReplayedEditUndo,
+): Promise<void> {
   const { turn } = st;
   // Files wrapped in externalEdit are judged by reportedPaths: a late snapshot shows nothing
   const skip = (p: string) => st.reportedPaths.has(p) || turn.written.has(p) || st.savedByUser.has(p);
@@ -406,7 +411,7 @@ async function reportUntrackedEdits(snapshot: WorkspaceSnapshot | undefined, st:
   log(`workspace diff: ${changes.map(c => c.path).join(', ')}`);
 
   // Native "files changed" (per-hunk Keep/Undo) where the chat session supports it
-  const native = turn.native && hasNativeEdits(turn.stream) ? await replayAsExternalEdit(changes, turn) : new Set<string>();
+  const native = turn.native && hasNativeEdits(turn.stream) ? await replayAsExternalEdit(changes, turn, replayedUndo) : new Set<string>();
   if (native.size) { log(`[edits] shown natively at the end of the turn: ${[...native].join(', ')}`); }
   // VS Code's own "files changed" owns their Keep/Undo now: drop snapshots taken
   // earlier (e.g. at a permission request), or they would outlive the turn
@@ -426,7 +431,7 @@ async function reportUntrackedEdits(snapshot: WorkspaceSnapshot | undefined, st:
  * with unsaved editor changes are left to the diff card. Returns the paths
  * that are now tracked natively.
  */
-async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn): Promise<Set<string>> {
+async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn, replayedUndo: ReplayedEditUndo): Promise<Set<string>> {
   // Never overwrite what the agent may have written since (it can still be running)
   const eligible = (await Promise.all(changes.map(async c => {
     const doc = findOpenDocument(c.path);
@@ -461,6 +466,8 @@ async function replayAsExternalEdit(changes: TurnFileChange[], turn: ActiveTurn)
     });
     if (result && await result) {
       markEdited(turn.stream, uris);
+      // VS Code's Undo may not save these files (see ReplayedEditUndo)
+      eligible.forEach(c => { if (c.before !== null) { replayedUndo.note(c.path, c.before, c.after!); } });
       return new Set(eligible.map(c => c.path));
     }
     log(`[edits] replay externalEdit ${result ? 'rejected' : 'unavailable'}; diff cards instead`);

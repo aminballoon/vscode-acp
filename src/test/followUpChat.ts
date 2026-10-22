@@ -92,7 +92,11 @@ export class FollowUpChat {
     await this.api.changeTracker.undoAll(true);
     await sleep(500);
     const problems = this.paths.filter(p => readOrNull(p) !== this.baseline.get(p))
-      .map(p => `${nodePath.basename(p)}: holds ${JSON.stringify(readOrNull(p))} after Undo, not ${JSON.stringify(this.baseline.get(p))}`);
+      .map(p => {
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === p);
+        const editor = doc?.isDirty ? ` (unsaved in the editor: ${JSON.stringify(doc.getText())})` : '';
+        return `${nodePath.basename(p)}: holds ${JSON.stringify(readOrNull(p))} after Undo, not ${JSON.stringify(this.baseline.get(p))}${editor}`;
+      });
     assert.deepStrictEqual(problems, [], problems.join('\n'));
   }
 

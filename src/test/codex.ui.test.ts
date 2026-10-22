@@ -32,13 +32,15 @@ suite('Codex edits in the real Chat view', function () {
     api = await connectFakeAgent({ 'chat.nativeEdits': true, autoApprovePermissions: 'allowAll' }, 'Fake Codex', 'fake-codex.mjs');
   });
 
+  let scenarioN = 0;
   for (const [name, scenario] of Object.entries(fixtures.scenarios)) {
     // Permissions are auto-approved here (allowAll)
     if (scenario.calls.some(c => c.approval && !c.approval.startsWith('allow'))) { continue; }
     test(name, async () => {
+      // A folder of its own: VS Code may still hold models of the files of earlier tests, and save them late
       const dir = scenario.outside
         ? fs.mkdtempSync(nodePath.join(fs.realpathSync(os.tmpdir()), 'acp-codex-'))
-        : nodePath.join(nodePath.dirname(fixtureTarget()), 'codex-scenario');
+        : nodePath.join(nodePath.dirname(fixtureTarget()), `codex-scenario-${++scenarioN}`);
       fs.rmSync(dir, { recursive: true, force: true });
       fs.mkdirSync(dir, { recursive: true });
       try {
@@ -67,12 +69,6 @@ suite('Codex edits in the real Chat view', function () {
       if (!setup.ask && turns.some(t => t.calls.some(c => c.approval === 'skip'))) { continue; }
       for (const between of BETWEEN_TURNS) {
         const title = `follow-up: ${name}; ${between} between turns; ${setup.label}`;
-        // Known issue: a file undone once in the chat and edited again by an agent that writes
-        // first (replayed at the end of the turn) is not reverted by a second Undo in VS Code
-        if (between === 'undo' && turns.length > 2 && !setup.cards) {
-          test.skip(`${title} (known issue: second Undo of a replayed edit)`, () => undefined);
-          continue;
-        }
         test(title, async () => {
           // A folder of its own: VS Code may still hold models of the files of earlier tests
           const dir = nodePath.join(nodePath.dirname(fixtureTarget()), `codex-follow-up-${++followUpN}`);
