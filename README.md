@@ -4,7 +4,6 @@
 
 # ACP Chat for VS Code
 
-[![CI](https://github.com/aminballoon/vscode-acp/actions/workflows/ci.yml/badge.svg)](https://github.com/aminballoon/vscode-acp/actions/workflows/ci.yml)
 [![VS Code](https://img.shields.io/badge/VS%20Code-1.140-007ACC?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![ACP](https://img.shields.io/badge/protocol-ACP-6E56CF)](https://agentclientprotocol.com/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
