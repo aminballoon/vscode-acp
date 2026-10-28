@@ -144,9 +144,10 @@ export function registerChatParticipant(
     });
 
     // Edits made outside edit tool calls (shell commands, the agent's own patch
-    // tooling) are found by comparing the git working tree after the turn
+    // tooling) are found by comparing the git working tree after the turn.
+    // Only inside a workspace folder: snapshotting a home directory or "/" takes minutes.
     const cwd = session?.cwd;
-    const snapshot = cwd ? await snapshots.take(cwd) : undefined;
+    const snapshot = cwd && vscode.workspace.getWorkspaceFolder(vscode.Uri.file(cwd)) ? await snapshots.take(cwd) : undefined;
     log(`[edits] turn ${requestCount} start: agent=${session?.agentName ?? '?'} native=${turn.native} nativeEdits=${hasNativeEdits(stream)} `
       + `clientFs=${router.usesClientFs(sessionId)} snapshot=${snapshot ? 'yes' : 'no'} cwd=${cwd ?? '?'}`);
     // Files saved in the editor meanwhile were changed by the user, not the agent

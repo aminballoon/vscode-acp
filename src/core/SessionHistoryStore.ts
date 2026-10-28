@@ -154,11 +154,12 @@ export class SessionHistoryStore {
    * Reconcile against an agent-provided list (called only when the agent
    * supports `session/list`). Keeps the local store consistent with the
    * agent for future use, but the tree itself uses the agent's list directly.
+   * Pass the list's complete set of sessions; with `cwd`, it only covers that cwd.
    */
-  reconcileFromAgent(agentName: string, knownSessionIds: Set<string>): void {
+  reconcileFromAgent(agentName: string, knownSessionIds: Set<string>, cwd?: string): void {
     let changed = false;
     this.entries = this.entries.filter(e => {
-      if (e.agentName !== agentName) { return true; }
+      if (e.agentName !== agentName || (cwd && e.cwd !== cwd)) { return true; }
       if (knownSessionIds.has(e.sessionId)) { return true; }
       changed = true;
       return false;

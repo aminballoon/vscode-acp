@@ -4,6 +4,7 @@ import { ChangeTracker } from '../changes/ChangeTracker';
 import { contentBeforeDiffs } from '../changes/diffUtil';
 import { hasChatSessions, isSameMinor, testedVsCodeMinor } from '../chat/proposed';
 import { buildDebugReport } from '../utils/DebugReport';
+import { SessionHistoryStore } from '../core/SessionHistoryStore';
 import { fingerprint, log, logTraffic } from '../utils/Logger';
 
 suite('Extension Test Suite', () => {
@@ -40,6 +41,17 @@ suite('Extension Test Suite', () => {
 
 	test('Chat sessions API is detected in this VS Code', () => {
 		assert.strictEqual(hasChatSessions(), true);
+	});
+
+	test('Session history keeps entries a partial session/list could not show', () => {
+		const state = new Map<string, unknown>();
+		const memento = { get: (k: string) => state.get(k), update: async (k: string, v: unknown) => { state.set(k, v); }, keys: () => [...state.keys()] } as unknown as vscode.Memento;
+		const history = new SessionHistoryStore(memento);
+		history.upsertNew('a', '/ws', 's1');
+		history.upsertNew('a', '/ws', 's2');
+		history.upsertNew('a', '/other', 's3');
+		history.reconcileFromAgent('a', new Set(['s1']), '/ws');
+		assert.deepStrictEqual(history.list('a').map(e => e.sessionId).sort(), ['s1', 's3'], 'only entries of the listed cwd are dropped');
 	});
 
 	test('Undo refuses to overwrite user edits unless forced', async () => {

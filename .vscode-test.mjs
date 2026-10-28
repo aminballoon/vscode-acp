@@ -6,7 +6,7 @@ const node = execSync('/bin/zsh -l -c "command -v node"').toString().trim();
 export default defineConfig([
 	{
 		label: 'unit',
-		files: ['out/test/extension.test.js', 'out/test/changes.test.js', 'out/test/skills.test.js', 'out/test/activity.test.js'],
+		files: ['out/test/extension.test.js', 'out/test/changes.test.js', 'out/test/skills.test.js', 'out/test/activity.test.js', 'out/test/terminal.test.js'],
 		// The downloaded builds (1.143+) no longer ship the binary @vscode/test-electron looks for
 		useInstallation: { fromPath: '/Applications/Visual Studio Code.app/Contents/MacOS/Code' },
 		launchArgs: ['--disable-extension=aminballoon.acp-chat', '--disable-extension=formulahendry.acp-client'],

@@ -29,6 +29,19 @@ interface ManagedTerminal {
   vsTerminal?: vscode.Terminal;
 }
 
+/** Signal the command and everything it started (its process group, see `detached`). */
+function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // the group is gone; signal the process itself
+    }
+  }
+  child.kill(signal);
+}
+
 /**
  * Manages terminals that ACP agents request (terminal/create, terminal/output, etc.).
  * Uses real child processes for capturing output, with VS Code terminals for display.
@@ -50,18 +63,25 @@ export class TerminalHandler {
       }
     }
 
+    // With arguments the command runs as is (a shell would split arguments at spaces);
+    // without, it is a command line for the shell. Windows needs the shell for .cmd scripts.
+    const isWin = process.platform === 'win32';
     const child = spawn(params.command, params.args || [], {
       cwd: params.cwd || undefined,
       env,
-      shell: true,
+      shell: isWin || !params.args?.length,
+      // Own process group, so kill reaches what the command started too
+      detached: !isWin,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // Decode across chunks: a multi-byte character can be split between two
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
 
     let output = '';
     let truncated = false;
 
-    const appendOutput = (data: Buffer) => {
-      const text = data.toString();
+    const appendOutput = (text: string) => {
       output += text;
       // Truncate from beginning if over limit
       const byteLength = Buffer.byteLength(output, 'utf-8');
@@ -95,7 +115,14 @@ export class TerminalHandler {
         }
         resolve();
       });
-      child.on('error', () => {
+      // The command could not start (e.g. not found): report it as an exit
+      child.on('error', err => {
+        appendOutput(`${err.message}\n`);
+        const managed = this.terminals.get(terminalId);
+        if (managed) {
+          managed.output = output;
+          managed.exited = true;
+        }
         resolve();
       });
     });
@@ -115,11 +142,11 @@ export class TerminalHandler {
     });
 
     // Stream output to VS Code terminal
-    child.stdout?.on('data', (data: Buffer) => {
-      writeEmitter.fire(data.toString().replace(/\n/g, '\r\n'));
+    child.stdout?.on('data', (text: string) => {
+      writeEmitter.fire(text.replace(/\n/g, '\r\n'));
     });
-    child.stderr?.on('data', (data: Buffer) => {
-      writeEmitter.fire(data.toString().replace(/\n/g, '\r\n'));
+    child.stderr?.on('data', (text: string) => {
+      writeEmitter.fire(text.replace(/\n/g, '\r\n'));
     });
 
     const managed: ManagedTerminal = {
@@ -194,7 +221,7 @@ export class TerminalHandler {
     }
 
     try {
-      managed.process.kill('SIGTERM');
+      killTree(managed.process, 'SIGTERM');
     } catch (e) {
       logError(`Failed to kill terminal ${params.terminalId}`, e);
     }
@@ -213,7 +240,7 @@ export class TerminalHandler {
     // Kill if still running
     if (!managed.exited) {
       try {
-        managed.process.kill('SIGTERM');
+        killTree(managed.process, 'SIGTERM');
       } catch {
         // ignore
       }
@@ -229,7 +256,7 @@ export class TerminalHandler {
     for (const [, managed] of this.terminals) {
       try {
         if (!managed.exited) {
-          managed.process.kill('SIGKILL');
+          killTree(managed.process, 'SIGKILL');
         }
         managed.vsTerminal?.dispose();
       } catch {

@@ -94,6 +94,8 @@ Then run **Preferences: Configure Runtime Arguments**, add this to `argv.json`, 
 "enable-proposed-api": ["aminballoon.acp-chat"]
 ```
 
+Without this entry VS Code does not load the extension at all: no ACP views or commands appear, and **Help → Toggle Developer Tools** shows `CANNOT USE these API proposals`.
+
 </details>
 
 ## Usage

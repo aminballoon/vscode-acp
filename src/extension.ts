@@ -148,16 +148,14 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   warnIfUntestedVsCode(context);
   // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input.
   // Built on a proposed API: when this VS Code can't run it, only @acp is offered.
+  // (Without --enable-proposed-api VS Code does not load the extension at all.)
   let acpSessions: ReturnType<typeof registerAcpChatSessions> | undefined;
   try {
     if (!hasChatSessions()) { throw new Error('the chatSessionsProvider API is missing'); }
     acpSessions = registerAcpChatSessions(context, sessionManager, sessionUpdateHandler, turnRouter, chatParticipant.runTurn, skillSelection);
   } catch (e) {
     logError('ACP chat session type unavailable', e);
-    const notEnabled = /proposal/i.test(String((e as Error)?.message ?? e));
-    void vscode.window.showWarningMessage(notEnabled
-      ? 'ACP Chat: proposed APIs are not enabled for this extension, so the "ACP" chat session type is off. Run "npm run setup" (or add "aminballoon.acp-chat" to "enable-proposed-api" in argv.json) and restart VS Code. @acp in the Chat view still works.'
-      : `ACP Chat: VS Code ${vscode.version} changed the chat sessions API, so the "ACP" chat session type is off. @acp in the Chat view still works; check for an ACP Chat update.`);
+    void vscode.window.showWarningMessage(`ACP Chat: VS Code ${vscode.version} changed the chat sessions API, so the "ACP" chat session type is off. @acp in the Chat view still works; check for an ACP Chat update.`);
   }
 
   const statusBarManager = new StatusBarManager(sessionManager);

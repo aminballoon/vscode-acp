@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { EventEmitter } from 'node:events';
+import * as os from 'node:os';
 
 import type {
   NewSessionResponse,
@@ -148,8 +149,8 @@ export class SessionManager extends EventEmitter {
   }
 
   private getWorkspaceCwd(): string {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    return cwd || process.cwd();
+    // Without a folder the extension host's cwd is often "/"
+    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || os.homedir();
   }
 
   private summarizeCapabilities(caps: AgentCapabilities | undefined | null): AgentCapabilitySummary {
@@ -244,16 +245,18 @@ export class SessionManager extends EventEmitter {
     const agentInstance = this.agentManager.spawnAgent(agentName, config, cwd);
     const agentId = agentInstance.id;
 
-    // Listen for agent errors/close
-    this.agentManager.on('agent-error', (evt: { agentId: string; error: Error }) => {
+    // Listen for agent errors/close, until this process is gone
+    const onError = (evt: { agentId: string; error: Error }) => {
       if (evt.agentId === agentId) {
         logError(`Agent ${agentName} error`, evt.error);
         this.emit('agent-error', agentId, evt.error);
       }
-    });
-
-    this.agentManager.on('agent-closed', (evt: { agentId: string; code: number | null }) => {
+    };
+    const onClosed = (evt: { agentId: string; code: number | null }) => {
       if (evt.agentId === agentId) {
+        this.agentManager.off('agent-error', onError);
+        this.agentManager.off('agent-closed', onClosed);
+        this.connectionManager.removeConnection(agentId);
         log(`Agent ${agentName} closed with code ${evt.code}`);
         // Clean up the sessions of this agent process
         if ([...this.sessions.values()].some(s => s.agentId === agentId)) {
@@ -261,7 +264,9 @@ export class SessionManager extends EventEmitter {
         }
         this.emit('agent-closed', agentId, evt.code);
       }
-    });
+    };
+    this.agentManager.on('agent-error', onError);
+    this.agentManager.on('agent-closed', onClosed);
 
     const agentProcess = this.agentManager.getAgent(agentId);
     if (!agentProcess) {
@@ -810,11 +815,12 @@ export class SessionManager extends EventEmitter {
 
     const sessions: ProtocolSessionInfo[] = response?.sessions ?? [];
     // Reconcile the history store — drop any locally-cached entries that
-    // the agent no longer knows about.
-    if (this.historyStore && !opts.cursor) {
+    // the agent no longer knows about. Only a complete list (one page) can tell.
+    if (this.historyStore && !opts.cursor && !response?.nextCursor) {
       this.historyStore.reconcileFromAgent(
         agentName,
         new Set(sessions.map(s => s.sessionId)),
+        opts.cwd,
       );
     }
     return { sessions, nextCursor: response?.nextCursor ?? undefined };
