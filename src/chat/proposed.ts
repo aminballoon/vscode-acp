@@ -2,10 +2,50 @@ import * as vscode from 'vscode';
 import { log } from '../utils/Logger';
 
 /**
- * Every call into VS Code's proposed chat API lives in this file, so an API
- * change in a future VS Code release only needs fixing here. Each helper
- * feature-detects and falls back to stable parts.
+ * Calls into VS Code's proposed chat API that the `@acp` participant uses
+ * live in this file, so an API change in a future VS Code release only needs
+ * fixing here. Each helper feature-detects and falls back to stable parts.
+ * The "ACP" chat session type (AcpChatSessions.ts) is built on the
+ * chatSessionsProvider proposal as a whole and is turned off when
+ * {@link hasChatSessions} says it cannot run.
  */
+
+/** "1.143" from engines.vscode "^1.143.0": the release the proposed API typings come from. */
+export function testedVsCodeMinor(enginesVscode: string): string | undefined {
+  return enginesVscode.match(/(\d+\.\d+)/)?.[1];
+}
+
+/** Whether `version` (e.g. "1.143.1" or "1.144.0-insider") is a build of the `minor` release. */
+export function isSameMinor(version: string, minor: string): boolean {
+  return version === minor || version.startsWith(`${minor}.`) || version.startsWith(`${minor}-`);
+}
+
+/**
+ * Whether this VS Code has the chatSessionsProvider API the "ACP" session
+ * type needs. It can still throw on first use when the proposal is not
+ * enabled for the extension, so callers also catch registration errors.
+ */
+export function hasChatSessions(): boolean {
+  try {
+    const chat = vscode.chat as Partial<typeof vscode.chat>;
+    return typeof chat.createChatSessionItemController === 'function'
+      && typeof chat.registerChatSessionContentProvider === 'function'
+      && typeof vscode.ChatRequestTurn2 === 'function'
+      && typeof vscode.ChatResponseTurn2 === 'function';
+  } catch {
+    return false;
+  }
+}
+
+/** A user turn of a restored chat's history (the constructor gains parameters between releases). */
+export function requestTurn(prompt: string, participant: string): vscode.ChatRequestTurn2 {
+  return new vscode.ChatRequestTurn2(prompt, undefined, [], participant, [], undefined, undefined, undefined, undefined);
+}
+
+/** An agent turn of a restored chat's history. */
+export function responseTurn(parts: vscode.ChatResponseMarkdownPart[], participant: string): vscode.ChatResponseTurn2 {
+  return new vscode.ChatResponseTurn2(parts, {}, participant);
+}
 
 type ProposedStream = vscode.ChatResponseStream & Partial<{
   textEdit(target: vscode.Uri, edits: vscode.TextEdit | vscode.TextEdit[] | true): void;

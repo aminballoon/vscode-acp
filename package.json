@@ -20,7 +20,7 @@
     "url": "https://github.com/aminballoon/vscode-acp.git"
   },
   "engines": {
-    "vscode": "^1.140.0"
+    "vscode": "^1.143.0"
   },
   "categories": [
     "AI",

@@ -4,7 +4,7 @@
 
 # ACP Chat for VS Code
 
-[![VS Code](https://img.shields.io/badge/VS%20Code-1.140-007ACC?logo=visualstudiocode)](https://code.visualstudio.com/)
+[![VS Code](https://img.shields.io/badge/VS%20Code-1.143-007ACC?logo=visualstudiocode)](https://code.visualstudio.com/)
 [![ACP](https://img.shields.io/badge/protocol-ACP-6E56CF)](https://agentclientprotocol.com/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -46,7 +46,7 @@ Each agent runs as its own official CLI, so you keep using your existing subscri
 
 ### Prerequisites
 
-- **VS Code 1.140.x**
+- **VS Code 1.143.x** (the proposed chat APIs change between releases; on other versions the extension warns and may turn off the ACP session type)
 - **Node.js 18+**, available from a login shell (`/bin/zsh -l -c 'node -v'`). Agents are launched through your login shell.
 - **The CLI of each agent you want to use**, already logged in:
   - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash`, then run `claude` and `/login`

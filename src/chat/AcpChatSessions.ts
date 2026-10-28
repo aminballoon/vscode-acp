@@ -10,6 +10,7 @@ import { PickedSkill, SkillSelection, skillsLabel } from './SkillSelection';
 import { loadSkills } from './SkillLibrary';
 import { configuredSkillPaths } from './SkillCommands';
 import { AcpChatStore, StoredChat, StoredTurn } from './AcpChatStore';
+import { requestTurn, responseTurn } from './proposed';
 import { getAgentNames } from '../config/AgentConfig';
 import { log, logError } from '../utils/Logger';
 
@@ -600,13 +601,13 @@ export function registerAcpChatSessions(
   const historyOf = (chat: StoredChat | undefined): Array<vscode.ChatRequestTurn | vscode.ChatResponseTurn2> => {
     const turns: Array<vscode.ChatRequestTurn | vscode.ChatResponseTurn2> = [];
     for (const t of chat?.turns ?? []) {
-      turns.push(new vscode.ChatRequestTurn2(t.prompt, undefined, [], ACP_SESSION_TYPE, [], undefined, undefined, undefined, undefined));
+      turns.push(requestTurn(t.prompt, ACP_SESSION_TYPE));
       const parts: vscode.ChatResponseMarkdownPart[] = [];
       if (t.tools.length) {
         parts.push(new vscode.ChatResponseMarkdownPart(`_${t.tools.map(x => x.replace(/[_*`]/g, '')).join(' · ')}_\n\n`));
       }
       parts.push(new vscode.ChatResponseMarkdownPart(t.response || '_(no reply)_'));
-      turns.push(new vscode.ChatResponseTurn2(parts, {}, ACP_SESSION_TYPE));
+      turns.push(responseTurn(parts, ACP_SESSION_TYPE));
     }
     return turns;
   };

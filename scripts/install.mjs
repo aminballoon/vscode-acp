@@ -22,7 +22,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const EXT_ID = `${pkg.publisher}.${pkg.name}`;
 const OLD_EXT_ID = 'formulahendry.acp-client';
-const SUPPORTED_VSCODE = '1.140.';
+// The VS Code minor the proposed API typings come from (engines.vscode "^1.143.0" → "1.143.")
+const SUPPORTED_VSCODE = pkg.engines.vscode.replace(/^\D*(\d+\.\d+).*$/, '$1.');
 
 const args = process.argv.slice(2);
 const flag = name => args.includes(name);

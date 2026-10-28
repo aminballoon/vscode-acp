@@ -13,6 +13,7 @@ import { registerChatParticipant } from './chat/AcpChatParticipant';
 import { SkillSelection } from './chat/SkillSelection';
 import { registerSkillCommands } from './chat/SkillCommands';
 import { registerAcpChatSessions } from './chat/AcpChatSessions';
+import { hasChatSessions, isSameMinor, testedVsCodeMinor } from './chat/proposed';
 import type { StoredChat } from './chat/AcpChatStore';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { AgentTreeProvider } from './ui/AgentTreeProvider';
@@ -144,8 +145,20 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   const skillSelection = new SkillSelection();
   registerSkillCommands(context);
   const chatParticipant = registerChatParticipant(context, sessionManager, sessionUpdateHandler, turnRouter, changeTracker, skillSelection);
-  // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input
-  const acpSessions = registerAcpChatSessions(context, sessionManager, sessionUpdateHandler, turnRouter, chatParticipant.runTurn, skillSelection);
+  warnIfUntestedVsCode(context);
+  // "ACP" chat session type: agent / model / effort / permission pickers in the Chat input.
+  // Built on a proposed API: when this VS Code can't run it, only @acp is offered.
+  let acpSessions: ReturnType<typeof registerAcpChatSessions> | undefined;
+  try {
+    if (!hasChatSessions()) { throw new Error('the chatSessionsProvider API is missing'); }
+    acpSessions = registerAcpChatSessions(context, sessionManager, sessionUpdateHandler, turnRouter, chatParticipant.runTurn, skillSelection);
+  } catch (e) {
+    logError('ACP chat session type unavailable', e);
+    const notEnabled = /proposal/i.test(String((e as Error)?.message ?? e));
+    void vscode.window.showWarningMessage(notEnabled
+      ? 'ACP Chat: proposed APIs are not enabled for this extension, so the "ACP" chat session type is off. Run "npm run setup" (or add "aminballoon.acp-chat" to "enable-proposed-api" in argv.json) and restart VS Code. @acp in the Chat view still works.'
+      : `ACP Chat: VS Code ${vscode.version} changed the chat sessions API, so the "ACP" chat session type is off. @acp in the Chat view still works; check for an ACP Chat update.`);
+  }
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
@@ -210,6 +223,10 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
   // Open a new ACP chat in the Chat view, optionally with an agent preselected
   const openChatCmd = vscode.commands.registerCommand('acp.openChat', async (arg?: string | { agentName?: string }) => {
     const agentName = typeof arg === 'string' ? arg : arg?.agentName;
+    if (!acpSessions) {
+      await vscode.commands.executeCommand('workbench.action.chat.open', { query: '@acp ', isPartialQuery: true });
+      return;
+    }
     if (agentName) { acpSessions.preferAgent(agentName); }
     await vscode.commands.executeCommand('workbench.action.chat.openNewChatSessionInPlace.acp', 'sidebar');
   });
@@ -384,19 +401,37 @@ export function activate(context: vscode.ExtensionContext): AcpExtensionApi {
     chatHandler: chatParticipant.handler,
     chatRequestCount: chatParticipant.requestCount,
     chatRequestsDone: chatParticipant.requestsDone,
-    acpSessionHandler: acpSessions.handler,
-    acpChats: () => acpSessions.store.list(),
+    acpSessionHandler: acpSessions?.handler ?? chatParticipant.handler,
+    acpChats: () => acpSessions?.store.list() ?? [],
     connectedAgents: () => sessionManager.getConnectedAgentNames(),
-    disconnectIdleAgents: ms => acpSessions.disconnectIdleAgents(ms),
-    listAcpChats: () => acpSessions.listChats(),
+    disconnectIdleAgents: async ms => acpSessions ? acpSessions.disconnectIdleAgents(ms) : [],
+    listAcpChats: async () => acpSessions ? acpSessions.listChats() : [],
     agentStatus: name => agentStatus.get(name),
-    openAcpChat: id => acpSessions.openChat(id),
+    openAcpChat: async id => acpSessions?.openChat(id),
     activeConfigOptions: () => sessionManager.getActiveSession()?.configOptions ?? null,
     setActiveMode: async modeId => {
       const id = sessionManager.getActiveSessionId();
       if (id) { await sessionManager.setMode(id, modeId); }
     },
   };
+}
+
+/**
+ * Proposed APIs change between VS Code releases: tell the user once per
+ * VS Code version when it isn't the release the typings come from.
+ */
+function warnIfUntestedVsCode(context: vscode.ExtensionContext): void {
+  const tested = testedVsCodeMinor(context.extension.packageJSON?.engines?.vscode ?? '');
+  if (!tested || isSameMinor(vscode.version, tested)) { return; }
+  log(`VS Code ${vscode.version} is not the tested release ${tested}.x; proposed chat APIs may differ`);
+  const key = 'acp.untestedVsCodeWarned';
+  if (context.globalState.get<string>(key) === vscode.version) { return; }
+  void context.globalState.update(key, vscode.version);
+  const report = 'Export Debug Report';
+  void vscode.window.showWarningMessage(
+    `ACP Chat was tested with VS Code ${tested}.x and this is ${vscode.version}. It uses proposed chat APIs that change between releases, so some features may not work until ACP Chat is updated.`,
+    report,
+  ).then(choice => { if (choice === report) { void vscode.commands.executeCommand('acp.exportDebugReport'); } });
 }
 
 export function deactivate(): void {

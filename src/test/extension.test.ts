@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import { ChangeTracker } from '../changes/ChangeTracker';
 import { contentBeforeDiffs } from '../changes/diffUtil';
+import { hasChatSessions, isSameMinor, testedVsCodeMinor } from '../chat/proposed';
 import { buildDebugReport } from '../utils/DebugReport';
 import { fingerprint, log, logTraffic } from '../utils/Logger';
 
@@ -26,6 +27,19 @@ suite('Extension Test Suite', () => {
 		assert.ok(acpCommands.includes('acp.connectAgent'), 'connectAgent command should exist');
 		assert.ok(!acpCommands.includes('acp.newConversation'), 'the sidebar chat webview and its commands are gone');
 		assert.ok(acpCommands.includes('acp.openChat'), 'openChat command should exist');
+	});
+
+	test('Tested VS Code release comes from engines.vscode', () => {
+		assert.strictEqual(testedVsCodeMinor('^1.143.0'), '1.143');
+		assert.strictEqual(testedVsCodeMinor(''), undefined);
+		assert.ok(isSameMinor('1.143.1', '1.143'));
+		assert.ok(isSameMinor('1.143.0-insider', '1.143'));
+		assert.ok(!isSameMinor('1.144.0', '1.143'));
+		assert.ok(!isSameMinor('1.1430.0', '1.143'));
+	});
+
+	test('Chat sessions API is detected in this VS Code', () => {
+		assert.strictEqual(hasChatSessions(), true);
 	});
 
 	test('Undo refuses to overwrite user edits unless forced', async () => {
