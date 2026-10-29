@@ -1,4 +1,8 @@
 import * as assert from 'assert';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as vscode from 'vscode';
 import { TerminalHandler } from '../handlers/TerminalHandler';
 
 /** Run a command to completion and return its output. */
@@ -25,7 +29,20 @@ suite('Agent terminals (TerminalHandler)', () => {
 
   test('a command line without arguments runs in a shell', async () => {
     const output = await run(terminals, 'echo hi && echo there');
-    assert.strictEqual(output, 'hi\nthere\n');
+    assert.match(output, /^hi ?\r?\nthere\r?\n$/); // cmd.exe keeps the space before &&
+  });
+
+  test('arguments reach a .cmd script as given on Windows', async function () {
+    if (process.platform !== 'win32') { this.skip(); }
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'acp-term-'));
+    const script = path.join(dir, 'print args.cmd');
+    await fs.writeFile(script, `@"${process.execPath}" -e "process.stdout.write(process.argv.slice(1).join('|'))" %*\r\n`);
+    try {
+      const output = await run(terminals, script, ['fix bug', 'a && b']);
+      assert.strictEqual(output, 'fix bug|a && b');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   test('multi-byte characters split across output chunks are kept', async () => {
@@ -40,6 +57,26 @@ suite('Agent terminals (TerminalHandler)', () => {
     const result = await terminals.terminalOutput({ sessionId: 's', terminalId });
     assert.ok(result.exitStatus, 'exit status is reported');
     assert.match(result.output, /ENOENT|not found/);
+  });
+
+  test('output written before the VS Code terminal opens still shows in it', async () => {
+    // VS Code ignores pty writes until open(), which can come after a quick command ends
+    const createTerminal = vscode.window.createTerminal;
+    let pty: vscode.Pseudoterminal | undefined;
+    (vscode.window as { createTerminal: unknown }).createTerminal = (options: vscode.ExtensionTerminalOptions) => {
+      pty = options.pty;
+      return { dispose() { /* fake */ } };
+    };
+    try {
+      await run(terminals, process.execPath, ['-e', 'process.stdout.write("early\\n")']);
+    } finally {
+      (vscode.window as { createTerminal: unknown }).createTerminal = createTerminal;
+    }
+    assert.ok(pty, 'a pseudoterminal was created');
+    let shown = '';
+    pty.onDidWrite(text => { shown += text; });
+    pty.open(undefined);
+    assert.match(shown, /early\r\n/);
   });
 
   test('kill stops the processes the command started', async function () {

@@ -14,7 +14,8 @@ import type {
   ReleaseTerminalResponse,
 } from '@agentclientprotocol/sdk';
 
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, ChildProcess, SpawnOptions } from 'node:child_process';
+import crossSpawn from 'cross-spawn';
 
 interface ManagedTerminal {
   id: string;
@@ -64,16 +65,18 @@ export class TerminalHandler {
     }
 
     // With arguments the command runs as is (a shell would split arguments at spaces);
-    // without, it is a command line for the shell. Windows needs the shell for .cmd scripts.
-    const isWin = process.platform === 'win32';
-    const child = spawn(params.command, params.args || [], {
+    // without, it is a command line for the shell. On Windows cross-spawn runs .cmd/.bat
+    // scripts through cmd.exe with each argument quoted.
+    const options: SpawnOptions = {
       cwd: params.cwd || undefined,
       env,
-      shell: isWin || !params.args?.length,
       // Own process group, so kill reaches what the command started too
-      detached: !isWin,
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    };
+    const child = params.args?.length
+      ? crossSpawn(params.command, params.args, options)
+      : spawn(params.command, { ...options, shell: true });
     // Decode across chunks: a multi-byte character can be split between two
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
@@ -129,10 +132,17 @@ export class TerminalHandler {
 
     // Also create a VS Code terminal for visual output
     const writeEmitter = new vscode.EventEmitter<string>();
+    // VS Code ignores writes until open(): hold output that comes earlier
+    let pending: string[] | undefined = [`$ ${params.command} ${(params.args || []).join(' ')}\r\n`];
+    const write = (text: string) => {
+      if (pending) { pending.push(text); } else { writeEmitter.fire(text); }
+    };
     const pty: vscode.Pseudoterminal = {
       onDidWrite: writeEmitter.event,
       open() {
-        writeEmitter.fire(`$ ${params.command} ${(params.args || []).join(' ')}\r\n`);
+        const held = pending ?? [];
+        pending = undefined;
+        writeEmitter.fire(held.join(''));
       },
       close() { /* no-op */ },
     };
@@ -142,12 +152,8 @@ export class TerminalHandler {
     });
 
     // Stream output to VS Code terminal
-    child.stdout?.on('data', (text: string) => {
-      writeEmitter.fire(text.replace(/\n/g, '\r\n'));
-    });
-    child.stderr?.on('data', (text: string) => {
-      writeEmitter.fire(text.replace(/\n/g, '\r\n'));
-    });
+    child.stdout?.on('data', (text: string) => write(text.replace(/\n/g, '\r\n')));
+    child.stderr?.on('data', (text: string) => write(text.replace(/\n/g, '\r\n')));
 
     const managed: ManagedTerminal = {
       id: terminalId,
