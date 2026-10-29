@@ -1,4 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
-  <rect width="24" height="24" rx="5" fill="#171923"/>
-  <text x="12" y="15.5" text-anchor="middle" fill="#fff" font-family="Arial, sans-serif" font-size="8.5" font-weight="700" letter-spacing="-0.45">ACP</text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M5 2h13a3 3 0 0 1 3 3v13a3 3 0 0 1 -3 3h-13a3 3 0 0 1 -3 -3v-13a3 3 0 0 1 3 -3zM4 8h3v1h-3zM10 8h4v1h-4zM15 8h4v1h-4zM3 9h1v1h-1zM7 9h1v1h-1zM9 9h1v1h-1zM15 9h1v1h-1zM19 9h1v1h-1zM3 10h1v1h-1zM7 10h1v1h-1zM9 10h1v1h-1zM15 10h1v1h-1zM19 10h1v1h-1zM3 11h5v1h-5zM9 11h1v1h-1zM15 11h4v1h-4zM3 12h1v1h-1zM7 12h1v1h-1zM9 12h1v1h-1zM15 12h1v1h-1zM3 13h1v1h-1zM7 13h1v1h-1zM9 13h1v1h-1zM15 13h1v1h-1zM3 14h1v1h-1zM7 14h1v1h-1zM10 14h4v1h-4zM15 14h1v1h-1z"/></svg>

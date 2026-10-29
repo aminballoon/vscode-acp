@@ -64,7 +64,10 @@
         "type": "acp",
         "name": "acp",
         "displayName": "ACP",
-        "icon": "$(hubot)",
+        "icon": {
+          "light": "resources/icon-light.svg",
+          "dark": "resources/icon-dark.svg"
+        },
         "welcomeTitle": "ACP Chat",
         "welcomeMessage": "Chat with Claude Code, Codex, Antigravity and other ACP agents",
         "inputPlaceholder": "Ask the selected ACP agent, type `#` for adding context",
