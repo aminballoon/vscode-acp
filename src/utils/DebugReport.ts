@@ -52,7 +52,10 @@ export function buildDebugReport(sources: DebugReportSources, withTraffic: boole
   const pending = sources.pendingChanges();
   lines.push('', '## Pending diff cards', pending.length ? pending.join('\n') : 'none');
   lines.push('', '## ACP Client log', recentLogText() || '(empty)');
-  if (withTraffic) { lines.push('', '## ACP Traffic', recentTrafficText() || '(empty: acp.logTraffic is off)'); }
+  if (withTraffic) {
+    const trafficOn = vscode.workspace.getConfiguration('acp').get<boolean>('logTraffic', true);
+    lines.push('', '## ACP Traffic', recentTrafficText() || (trafficOn ? '(empty: no messages with an agent yet)' : '(empty: acp.logTraffic is off)'));
+  }
   return lines.join('\n') + '\n';
 }
 
